@@ -14,7 +14,7 @@ below from the repository root.
 
 ## Contract tooling
 
-Use Node.js 24 LTS and npm. Install dependencies from the committed lockfile:
+Use Node.js 26 LTS and npm. Install dependencies from the committed lockfile:
 
 ```sh
 cd smart-contract
@@ -38,7 +38,8 @@ input limits, and events are described in [the contract documentation](attestati
 replay protection, history pagination, and the verification request lifecycle.
 
 The configured `hardhatMainnet` network is a local simulated Ethereum L1 for
-development. Private Geth deployment is not configured yet. Sepolia and IOTA
+development. See [private Geth setup](private-geth.md) for persistent deployment.
+Sepolia and IOTA
 testnet are used for the performance comparison. Private-chain measurements
 are used for functional validation and the demo.
 
