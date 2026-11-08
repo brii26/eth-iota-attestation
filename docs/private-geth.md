@@ -6,7 +6,7 @@ functional development and the demonstration, separate from testnet benchmarks.
 
 ## Start the node
 
-Install Docker Engine with Compose and Node.js 24 LTS, then run from the
+Install Docker Engine with Compose and Node.js 26 LTS, then run from the
 repository root:
 
 ```sh

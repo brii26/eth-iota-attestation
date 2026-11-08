@@ -14,7 +14,7 @@ below from the repository root.
 
 ## Contract tooling
 
-Use Node.js 24 LTS and npm. Install dependencies from the committed lockfile:
+Use Node.js 26 LTS and npm. Install dependencies from the committed lockfile:
 
 ```sh
 cd smart-contract
