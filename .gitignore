@@ -1,0 +1,21 @@
+client_secret*.json
+oauth_client*.json
+*.json.key
+sa.json
+
+# Local only
+progress.md
+
+# Build output and secrets
+node_modules/
+artifacts/
+cache/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.tsbuildinfo
