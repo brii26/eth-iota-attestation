@@ -5,6 +5,7 @@ sa.json
 
 # Local only
 progress.md
+smart-contract/iota/results/
 
 # Build output and secrets
 node_modules/

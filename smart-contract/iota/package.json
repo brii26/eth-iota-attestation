@@ -1,0 +1,15 @@
+{
+  "name": "artifact-attestation-iota-spike",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "spike": "node --env-file-if-exists=.env --import tsx notarization-spike.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@iota/iota-interaction-ts": "0.14.0",
+    "@iota/iota-sdk": "1.17.0",
+    "@iota/notarization": "0.1.15"
+  }
+}
