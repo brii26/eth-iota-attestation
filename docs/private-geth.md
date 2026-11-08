@@ -84,10 +84,12 @@ machine, forward its loopback RPC over SSH and use the forwarded local port.
 
 ## Validation status
 
-The deployment and read-back scripts can be checked against an Ethereum JSON-RPC
-development node. Actual Geth startup, volume persistence, and MetaMask
-connection must also be exercised on a host with Docker access. These are
-separate checks from a successful contract unit test run.
+Deployment, developer-account funding, separate admin and oracle signatures,
+record read-back, chain ID validation, and tampered-receipt rejection have been
+checked on a simulated Ethereum chain through an in-process RPC transport.
+Actual Geth startup, volume persistence, and MetaMask connection remain
+unverified and must be exercised on a host with Docker access. The simulation
+does not provide evidence of Geth-specific persistence or wallet behavior.
 
 The course's acceptance of single-node `--dev` as the required private chain
 remains a deployment decision to confirm with the teaching team.
