@@ -1,7 +1,7 @@
 # Oracle and backend
 
 Reserved for the Fastify and TypeScript API, oracle, and chain adapters.
-The backend and oracle share this directory; a separate backend service is
+The backend and oracle share this directory. A separate backend service is
 not required for the proof of concept.
 
 The oracle will validate submissions, fetch artifacts from Verdaccio, hash the

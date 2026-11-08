@@ -36,7 +36,7 @@ test run validates tooling only.
 
 The configured `hardhatMainnet` network is a local simulated Ethereum L1 for
 development. Private Geth deployment is not configured yet. Sepolia and IOTA
-testnet are used for the performance comparison; private-chain measurements
+testnet are used for the performance comparison. Private-chain measurements
 are used for functional validation and the demo.
 
 ## Local files

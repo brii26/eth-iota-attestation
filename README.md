@@ -10,12 +10,12 @@ The project is under development. The architecture below describes the planned s
 
 A software release consists of a package, a Software Bill of Materials (SBOM),
 and a vulnerability scan. The system binds SHA-256 hashes of these files to the
-application name, version, scan ID, and recording oracle. Files remain off-chain;
-the blockchain holds their fingerprints and attestation metadata.
+application name, version, scan ID, and recording oracle. Files remain off-chain.
+The blockchain holds their fingerprints and attestation metadata.
 
 Verification recomputes the hashes and checks the oracle's authorization to
 establish whether the files match the attestation for the selected release.
-An attestation proves that an authorized oracle recorded those hashes; it does
+An attestation proves that an authorized oracle recorded those hashes. It does
 not establish that the vulnerability scan is correct or the software is safe.
 
 ## Architecture
