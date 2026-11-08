@@ -34,7 +34,8 @@ first build, which needs internet access and a writable user cache.
 
 `contracts/AttestationRegistry.sol` implements the Ethereum registry. Its API,
 input limits, and events are described in [the contract documentation](attestation-registry.md).
-The dedicated contract test suite has not been added yet.
+`test/AttestationRegistry.ts` covers record integrity, permissions, input limits,
+replay protection, history pagination, and the verification request lifecycle.
 
 The configured `hardhatMainnet` network is a local simulated Ethereum L1 for
 development. Private Geth deployment is not configured yet. Sepolia and IOTA
