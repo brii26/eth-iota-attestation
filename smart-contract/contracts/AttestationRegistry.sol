@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.28;
+pragma solidity ^0.8.28;
 
 /// @notice Append-only attestations and oracle-fulfilled verification requests.
 /// @dev Hashes describe original file bytes. The registry does not verify file contents.

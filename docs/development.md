@@ -26,9 +26,11 @@ npm run typecheck
 
 `npx hardhat build` is equivalent to `npm run build`. The configuration loads
 `@nomicfoundation/hardhat-toolbox-viem`, including the Node test runner and viem.
-Solidity is pinned to 0.8.28 with the Cancun EVM target and optimizer enabled
-for 200 runs. Hardhat downloads the compiler on the first build, which needs
-internet access and a writable user cache.
+The Hardhat compiler is pinned to Solidity 0.8.28 with the Cancun EVM target
+and optimizer enabled for 200 runs. The contract's version pragma accepts
+Solidity from 0.8.28 up to, but excluding, 0.9.0 so editors using newer 0.8.x
+compilers can also check the source. Hardhat downloads the compiler on the
+first build, which needs internet access and a writable user cache.
 
 `contracts/AttestationRegistry.sol` implements the Ethereum registry. Its API,
 input limits, and events are described in [the contract documentation](attestation-registry.md).
