@@ -22,5 +22,39 @@ services:
       start_period: 10s
     stop_grace_period: 30s
 
+  verdaccio:
+    image: verdaccio/verdaccio:6
+    ports:
+      - "127.0.0.1:4873:4873"
+    volumes:
+      - ./docker/verdaccio/config.yaml:/verdaccio/conf/config.yaml:ro
+      - verdaccio-storage:/verdaccio/storage
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://127.0.0.1:4873/-/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+  rustfs:
+    image: rustfs/rustfs:1.0.4
+    ports:
+      - "127.0.0.1:9000:9000" # S3 API
+      - "127.0.0.1:9002:9001" # Web Console
+    environment:
+      - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY:-rustfsdevpassword123}
+      - RUSTFS_ADDRESS=:9000
+      - RUSTFS_CONSOLE_ADDRESS=:9001
+    volumes:
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
 volumes:
   geth-data:
+  verdaccio-storage:
+  rustfs-data:
