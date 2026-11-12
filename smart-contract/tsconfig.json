@@ -1,14 +1,20 @@
 {
   "compilerOptions": {
     "target": "ES2023",
-    "lib": ["ES2023"],
+    "lib": [
+      "ES2023"
+    ],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
     "skipLibCheck": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["hardhat.config.ts", "test/**/*.ts", "scripts/**/*.ts", "ignition/**/*.ts"]
+  "include": [
+    "hardhat.config.ts"
+  ]
 }

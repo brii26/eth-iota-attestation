@@ -6,7 +6,7 @@ functional development and the demonstration, separate from testnet benchmarks.
 
 ## Start the node
 
-Install Docker Engine with Compose and Node.js 26 LTS, then run from the
+Install Docker Engine with Compose and Go 1.26 or newer, then run from the
 repository root:
 
 ```sh
@@ -23,10 +23,9 @@ Keep this RPC local to the development machine.
 
 ## Create application accounts
 
-From `smart-contract/`, install dependencies and create an environment file:
+From `smart-contract/`, create an environment file:
 
 ```sh
-npm ci
 cp .env.example .env
 chmod 600 .env
 ```
@@ -43,8 +42,7 @@ with a chain ID other than 1337. Set the flag back to `0` after funding.
 ## Deploy and write a smoke record
 
 ```sh
-npm run build
-npm run geth:deploy
+go run ./cmd/deploy-private
 ```
 
 The script signs deployment and oracle authorization with the admin account,
@@ -65,7 +63,7 @@ From the repository root, restart the service without deleting its volume:
 docker compose restart geth
 docker compose up -d --wait geth
 cd smart-contract
-npm run geth:verify
+go run ./cmd/verify-private
 ```
 
 Verification uses the saved deployment receipt and requires no signing key.
@@ -84,12 +82,15 @@ machine, forward its loopback RPC over SSH and use the forwarded local port.
 
 ## Validation status
 
-Deployment, developer-account funding, separate admin and oracle signatures,
-record read-back, chain ID validation, and tampered-receipt rejection have been
-checked on a simulated Ethereum chain through an in-process RPC transport.
-Actual Geth startup, volume persistence, and MetaMask connection remain
-unverified and must be exercised on a host with Docker access. The simulation
-does not provide evidence of Geth-specific persistence or wallet behavior.
+Both commands were run against a real Geth v1.17.10 container started with
+`docker compose up -d --wait geth`. Deployment, developer-account funding,
+separate admin and oracle signatures, record read-back, and the chain ID guard
+worked. `go run ./cmd/verify-private` succeeded after `docker compose restart
+geth` and after `docker compose up -d --force-recreate geth` with the same
+volume, so the chain and the record persisted. A receipt with a changed scan ID
+and a receipt with another chain ID were both rejected.
+
+MetaMask connection has not been tried and must be checked in a browser.
 
 The course's acceptance of single-node `--dev` as the required private chain
 remains a deployment decision to confirm with the teaching team.

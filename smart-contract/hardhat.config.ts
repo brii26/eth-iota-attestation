@@ -1,8 +1,7 @@
-import hardhatToolboxViem from "@nomicfoundation/hardhat-toolbox-viem";
 import { defineConfig } from "hardhat/config";
 
+// Hardhat compiles the contract. Tests, deployment, and bindings are written in Go.
 export default defineConfig({
-  plugins: [hardhatToolboxViem],
   solidity: {
     version: "0.8.28",
     settings: {
@@ -11,12 +10,6 @@ export default defineConfig({
         enabled: true,
         runs: 200,
       },
-    },
-  },
-  networks: {
-    hardhatMainnet: {
-      type: "edr-simulated",
-      chainType: "l1",
     },
   },
 });

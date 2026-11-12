@@ -1,7 +1,7 @@
 # Attestation registry security review
 
 This review covers `smart-contract/contracts/AttestationRegistry.sol` and its
-test suite in `smart-contract/test/AttestationRegistry.ts`. It assesses the
+test suite in `smart-contract/registry/registry_test.go`. It assesses the
 current registry behavior, including its trust assumptions and remaining risks.
 It is an implementation review, without a claim of independent audit.
 
@@ -11,8 +11,8 @@ Denial of service and insecure randomness are considered separately below.
 
 ## Mitigations and test evidence
 
-The names in the last column are exact test names. Run them with
-`cd smart-contract && npm test` after installing dependencies and building.
+The names in the last column are the exact strings passed to `t.Run` in
+`TestAttestationRegistry`. Run them with `cd smart-contract && go test ./registry`.
 
 | Risk | Implementation and remaining limits | Test evidence |
 | --- | --- | --- |
@@ -74,6 +74,6 @@ or response deadline. A failed or revoked oracle can leave requests pending.
 ## Verification result
 
 All 32 contract tests pass with Solidity 0.8.28 and the Cancun EVM target.
-TypeScript typechecking also passes. The test evidence covers the behaviors
+The test evidence covers the behaviors
 listed above. It does not establish the absence of every possible vulnerability
 or validate the future backend, wallet UI, Geth deployment, or IOTA adapter.
