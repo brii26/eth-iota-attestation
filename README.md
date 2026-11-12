@@ -80,19 +80,37 @@ and lock guarantees remain subject to validation.
 - **RQ1:** Does binding hashes to application, version, scan ID, and oracle catch tampering that a hashes-only baseline misses?
 - **RQ2:** How do cost, inclusion time, and finality compare on Sepolia and the IOTA testnet, and how does SBOM size affect processing time?
 
-## Planned technology stack
+## Technology stack
 
 | Layer | Technology |
 | :--- | :--- |
 | Frontend | React, Vite, TypeScript, Tailwind CSS, shadcn/ui |
-| Backend and oracle | Fastify, Node.js, TypeScript |
-| Ethereum | Solidity, Hardhat 3, viem, MetaMask |
-| IOTA Rebased | IOTA Notarization SDK, IOTA TypeScript SDK |
+| Backend API and oracle | Go, standard library `net/http` |
+| Ethereum | Solidity, Hardhat 3 (compiler), go-ethereum bindings, MetaMask |
+| IOTA Rebased | IOTA Notarization (TypeScript spike, adapter planned) |
 | Storage | Verdaccio, RustFS, SQLite |
 | CI and scanning | GitHub Actions, Syft, Grype |
-| Benchmark and infrastructure | Vitest, Docker Compose |
+| Benchmark and infrastructure | Go `testing`, Docker Compose |
 
-Development instructions are in [the project documentation](docs/development.md).
+The backend, oracle, contract tests, deployment commands, and benchmarks are
+written in Go. Hardhat only compiles the contract. The IOTA notarization library
+exists for Rust and WebAssembly with TypeScript bindings but not for Go, so the
+IOTA adapter is planned as a small TypeScript service that the Go oracle calls.
+The IOTA spike stays in TypeScript for the same reason.
+
+## Getting started
+
+Requirements: Go 1.26 or newer, Docker with Compose, and Node.js 26 LTS (only
+to compile the contract and regenerate bindings).
+
+```sh
+cd smart-contract
+go test ./registry          # contract tests on a simulated chain
+```
+
+Start the private Geth chain and deploy the contract by following
+[the private Geth guide](docs/private-geth.md). Other development instructions
+are in [the project documentation](docs/development.md).
 
 ## License
 

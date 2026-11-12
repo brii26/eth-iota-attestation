@@ -21,3 +21,5 @@ coverage/
 *.sqlite-wal
 *.tsbuildinfo
 smart-contract/deployments/
+*.test
+*.out

@@ -8,26 +8,12 @@
   },
   "scripts": {
     "build": "hardhat build",
-    "test": "hardhat test",
-    "typecheck": "tsc --noEmit",
-    "geth:deploy": "node --env-file-if-exists=.env --import tsx scripts/deploy-private.ts",
-    "geth:verify": "node --env-file-if-exists=.env --import tsx scripts/verify-private.ts"
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@nomicfoundation/hardhat-ignition": "^3.1.9",
-    "@nomicfoundation/hardhat-ignition-viem": "^3.1.6",
-    "@nomicfoundation/hardhat-keystore": "^3.1.2",
-    "@nomicfoundation/hardhat-network-helpers": "^3.0.12",
-    "@nomicfoundation/hardhat-node-test-runner": "^3.1.2",
-    "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
-    "@nomicfoundation/hardhat-verify": "^3.1.4",
-    "@nomicfoundation/hardhat-viem": "^3.1.0",
-    "@nomicfoundation/hardhat-viem-assertions": "^3.1.5",
-    "@nomicfoundation/ignition-core": "^3.1.11",
     "@types/node": "^26.6.6",
     "hardhat": "^3.21.2",
     "tsx": "^4.23.15",
-    "typescript": "^7.0.2",
-    "viem": "^2.57.16"
+    "typescript": "^7.0.2"
   }
 }

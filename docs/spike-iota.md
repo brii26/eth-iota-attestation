@@ -1,8 +1,9 @@
 # IOTA notarization spike
 
-This spike investigates locked notarization for artifact attestations. It
-creates disposable test records, checks their lifecycle, and exports evidence
-without storing signing keys. It is restricted to testnet or localnet.
+This spike investigates locked notarization for artifact attestations. It stays
+in TypeScript because the notarization library exists for Rust and WebAssembly
+with TypeScript bindings and has no Go version. It creates disposable test records, checks their lifecycle,
+and exports evidence without storing signing keys. It is restricted to testnet or localnet.
 
 ## Current evidence
 
