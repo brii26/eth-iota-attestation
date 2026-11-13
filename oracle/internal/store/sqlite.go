@@ -68,6 +68,22 @@ func NewSQLiteIndex(dbPath string) (*SQLiteIndex, error) {
 		UNIQUE(network, scan_id)
 	);
 	CREATE INDEX IF NOT EXISTS idx_attestations_lookup ON attestations(network, scan_id);
+
+	CREATE TABLE IF NOT EXISTS sync_state (
+		network TEXT PRIMARY KEY,
+		last_block INTEGER NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS fulfilled_verifications (
+		network TEXT NOT NULL,
+		request_id TEXT NOT NULL,
+		record_id TEXT NOT NULL,
+		status INTEGER NOT NULL,
+		stale INTEGER NOT NULL,
+		tx_ref TEXT,
+		fulfilled_at DATETIME NOT NULL,
+		PRIMARY KEY(network, request_id)
+	);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
@@ -218,6 +234,61 @@ func (s *SQLiteIndex) ListRecords(ctx context.Context, network, app, version str
 	}
 
 	return items, total, rows.Err()
+}
+
+// GetLastProcessedBlock returns the last processed block number for the network.
+func (s *SQLiteIndex) GetLastProcessedBlock(ctx context.Context, network string) (uint64, error) {
+	var block uint64
+	err := s.db.QueryRowContext(ctx, "SELECT last_block FROM sync_state WHERE network = ?", network).Scan(&block)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("get last processed block: %w", err)
+	}
+	return block, nil
+}
+
+// SetLastProcessedBlock sets the last processed block number for the network.
+func (s *SQLiteIndex) SetLastProcessedBlock(ctx context.Context, network string, block uint64) error {
+	query := `
+	INSERT INTO sync_state (network, last_block)
+	VALUES (?, ?)
+	ON CONFLICT(network) DO UPDATE SET last_block = excluded.last_block
+	`
+	_, err := s.db.ExecContext(ctx, query, network, block)
+	if err != nil {
+		return fmt.Errorf("set last processed block: %w", err)
+	}
+	return nil
+}
+
+// IsVerificationFulfilled checks whether a verification request has already been recorded as fulfilled.
+func (s *SQLiteIndex) IsVerificationFulfilled(ctx context.Context, network, requestID string) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM fulfilled_verifications WHERE network = ? AND request_id = ?", network, requestID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("check fulfilled verification: %w", err)
+	}
+	return count > 0, nil
+}
+
+// RecordFulfilledVerification records a fulfilled verification request.
+func (s *SQLiteIndex) RecordFulfilledVerification(ctx context.Context, network, requestID, recordID string, status uint8, stale bool, txRef string) error {
+	staleInt := 0
+	if stale {
+		staleInt = 1
+	}
+	query := `
+	INSERT OR REPLACE INTO fulfilled_verifications (
+		network, request_id, record_id, status, stale, tx_ref, fulfilled_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`
+	_, err := s.db.ExecContext(ctx, query, network, requestID, recordID, status, staleInt, txRef, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("insert fulfilled verification: %w", err)
+	}
+	return nil
 }
 
 // Close closes the underlying SQLite database connection.
