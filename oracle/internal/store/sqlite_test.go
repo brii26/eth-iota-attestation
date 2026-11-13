@@ -78,4 +78,34 @@ func TestSQLiteIndex(t *testing.T) {
 	if st.Status != "included" || st.TxRef != "0xabc" || st.RecordID != "0x123" {
 		t.Fatalf("status update mismatch: %+v", st)
 	}
+
+	// 7. Sync state (last processed block)
+	block, err := idx.GetLastProcessedBlock(ctx, rec.Network)
+	if err != nil || block != 0 {
+		t.Fatalf("expected initial block 0, got %d, err=%v", block, err)
+	}
+
+	if err := idx.SetLastProcessedBlock(ctx, rec.Network, 100); err != nil {
+		t.Fatalf("failed to set last processed block: %v", err)
+	}
+
+	block, err = idx.GetLastProcessedBlock(ctx, rec.Network)
+	if err != nil || block != 100 {
+		t.Fatalf("expected block 100, got %d, err=%v", block, err)
+	}
+
+	// 8. Fulfilled verifications
+	fulfilled, err := idx.IsVerificationFulfilled(ctx, rec.Network, "req-1")
+	if err != nil || fulfilled {
+		t.Fatalf("expected req-1 not fulfilled, got %v, err=%v", fulfilled, err)
+	}
+
+	if err := idx.RecordFulfilledVerification(ctx, rec.Network, "req-1", "rec-42", 1, false, "0xtx"); err != nil {
+		t.Fatalf("failed to record fulfilled verification: %v", err)
+	}
+
+	fulfilled, err = idx.IsVerificationFulfilled(ctx, rec.Network, "req-1")
+	if err != nil || !fulfilled {
+		t.Fatalf("expected req-1 fulfilled, got %v, err=%v", fulfilled, err)
+	}
 }

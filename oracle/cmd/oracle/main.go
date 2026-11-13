@@ -15,6 +15,7 @@ import (
 
 	"github.com/brii26/eth-iota-attestation/oracle/internal/api"
 	"github.com/brii26/eth-iota-attestation/oracle/internal/chain"
+	"github.com/brii26/eth-iota-attestation/oracle/internal/listener"
 	"github.com/brii26/eth-iota-attestation/oracle/internal/store"
 	"github.com/brii26/eth-iota-attestation/oracle/internal/verify"
 )
@@ -118,6 +119,33 @@ func main() {
 		VerdaccioClient: verdaccioClient,
 		MaxGrypeDBAge:   maxAge,
 	})
+
+	// Start background on-chain verification listeners for Ethereum networks
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()
+
+	verifyEngine := verify.NewEngine(verify.EngineConfig{
+		BlobStore:       s3Store,
+		ArtifactFetcher: verdaccioClient,
+		MaxGrypeDBAge:   maxAge,
+	})
+
+	for _, netName := range router.SupportedNetworks() {
+		if strings.HasPrefix(netName, "ethereum-") {
+			ad, err := router.Get(netName)
+			if err == nil {
+				w := listener.NewWorker(listener.Config{
+					Adapter:      ad,
+					Engine:       verifyEngine,
+					Index:        idx,
+					Network:      netName,
+					PollInterval: 3 * time.Second,
+				})
+				go w.Start(workerCtx)
+				log.Printf("Started on-chain verification listener for network: %s", netName)
+			}
+		}
+	}
 
 	httpServer := &http.Server{
 		Addr:         ":" + port,

@@ -2,9 +2,11 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -281,6 +283,378 @@ func TestAttestationAPI(t *testing.T) {
 
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("expected status 400 for unsupported network, got %d", rec.Code)
+		}
+	})
+}
+
+type testBlobStore struct {
+	sboms map[string][]byte
+	scans map[string][]byte
+}
+
+func (m *testBlobStore) GetSBOM(ctx context.Context, key string) ([]byte, error) {
+	if data, ok := m.sboms[key]; ok {
+		return data, nil
+	}
+	return nil, errors.New("sbom not found in test blob store")
+}
+
+func (m *testBlobStore) GetScan(ctx context.Context, key string) ([]byte, error) {
+	if data, ok := m.scans[key]; ok {
+		return data, nil
+	}
+	return nil, errors.New("scan not found in test blob store")
+}
+
+func TestVerifyAPI(t *testing.T) {
+	tmpDir := t.TempDir()
+	idx, err := store.NewSQLiteIndex(filepath.Join(tmpDir, "test-verify.sqlite"))
+	if err != nil {
+		t.Fatalf("failed to init sqlite: %v", err)
+	}
+	defer idx.Close()
+
+	mockChain := chain.NewMockAdapter("ethereum-private")
+	router := chain.NewRouter()
+	router.Register(mockChain)
+
+	var currentArtifact []byte = []byte("valid-tarball-v1.4.2")
+
+	verdaccioSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/demo-lib":
+			doc := map[string]interface{}{
+				"versions": map[string]interface{}{
+					"1.4.2": map[string]interface{}{
+						"dist": map[string]interface{}{
+							"tarball": "http://" + r.Host + "/demo-lib/-/demo-lib-1.4.2.tgz",
+						},
+					},
+				},
+			}
+			json.NewEncoder(w).Encode(doc)
+		case "/demo-lib/-/demo-lib-1.4.2.tgz":
+			w.Write(currentArtifact)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer verdaccioSrv.Close()
+
+	blobStore := &testBlobStore{
+		sboms: make(map[string][]byte),
+		scans: make(map[string][]byte),
+	}
+
+	srv := NewServer(Config{
+		Index:           idx,
+		Router:          router,
+		BlobStore:       blobStore,
+		VerdaccioClient: verify.NewVerdaccioClient(verdaccioSrv.URL),
+		MaxGrypeDBAge:   24 * time.Hour,
+	})
+
+	app := "demo-lib"
+	version := "1.4.2"
+	scanID := "scan-verify-1"
+	storageKey := fmt.Sprintf("ethereum-private/%s/%s/%s.json", app, version, scanID)
+
+	sbomBytes := []byte(`{"bomFormat":"CycloneDX"}`)
+	freshTime := time.Now().UTC().Format(time.RFC3339)
+	scanBytes := []byte(fmt.Sprintf(`{"descriptor":{"db":{"built":%q}}}`, freshTime))
+
+	artHash, _ := verify.ComputeSHA256(currentArtifact)
+	sbomHash, _ := verify.ComputeSHA256(sbomBytes)
+	scanHash, _ := verify.ComputeSHA256(scanBytes)
+
+	blobStore.sboms[storageKey] = sbomBytes
+	blobStore.scans[storageKey] = scanBytes
+
+	signer := "0x8a3fB9000000000000000000000000000000c19e"
+	mockChain.SetRecord(chain.ChainRecord{
+		RecordID:     "42",
+		App:          app,
+		Version:      version,
+		ScanID:       scanID,
+		ArtifactHash: artHash,
+		SBOMHash:     sbomHash,
+		ScanHash:     scanHash,
+		Signer:       signer,
+		Timestamp:    time.Now().UTC(),
+	})
+
+	// 1. Verify returns VALID
+	t.Run("Valid verify returns 200 VALID", func(t *testing.T) {
+		reqBody := model.VerifyRequest{
+			Network: "ethereum-private",
+			App:     app,
+			Version: version,
+		}
+		payload, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/verify", bytes.NewReader(payload))
+		rec := httptest.NewRecorder()
+
+		srv.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d. body: %s", rec.Code, rec.Body.String())
+		}
+
+		var res model.VerifyResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		if res.Status != model.StatusValid || res.Stale {
+			t.Errorf("expected VALID status with stale=false, got status=%s, stale=%v", res.Status, res.Stale)
+		}
+		if res.RecordID != "42" {
+			t.Errorf("expected recordId 42, got %s", res.RecordID)
+		}
+	})
+
+	// 2. Tampered artifact returns ARTIFACT_MISMATCH
+	t.Run("Tampered artifact returns ARTIFACT_MISMATCH", func(t *testing.T) {
+		currentArtifact = []byte("tampered-tarball-contents")
+		defer func() {
+			currentArtifact = []byte("valid-tarball-v1.4.2")
+		}()
+
+		reqBody := model.VerifyRequest{
+			Network: "ethereum-private",
+			App:     app,
+			Version: version,
+		}
+		payload, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/verify", bytes.NewReader(payload))
+		rec := httptest.NewRecorder()
+
+		srv.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+
+		var res model.VerifyResponse
+		json.Unmarshal(rec.Body.Bytes(), &res)
+		if res.Status != model.StatusArtifactMismatch {
+			t.Errorf("expected status %s, got %s", model.StatusArtifactMismatch, res.Status)
+		}
+		if res.Checks.Artifact != model.CheckMismatch {
+			t.Errorf("expected artifact check to be MISMATCH, got %s", res.Checks.Artifact)
+		}
+	})
+
+	// 3. Untrusted signer returns UNTRUSTED_SIGNER
+	t.Run("Untrusted signer returns UNTRUSTED_SIGNER", func(t *testing.T) {
+		mockChain.SetSignerAuthorized(signer, false)
+		defer mockChain.SetSignerAuthorized(signer, true)
+
+		reqBody := model.VerifyRequest{
+			Network: "ethereum-private",
+			App:     app,
+			Version: version,
+		}
+		payload, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/verify", bytes.NewReader(payload))
+		rec := httptest.NewRecorder()
+
+		srv.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+
+		var res model.VerifyResponse
+		json.Unmarshal(rec.Body.Bytes(), &res)
+		if res.Status != model.StatusUntrustedSigner {
+			t.Errorf("expected status %s, got %s", model.StatusUntrustedSigner, res.Status)
+		}
+		if res.Checks.SignerTrusted {
+			t.Errorf("expected signerTrusted to be false")
+		}
+	})
+
+	// 4. Missing record on chain returns RECORD_NOT_FOUND
+	t.Run("Non-existent record returns RECORD_NOT_FOUND", func(t *testing.T) {
+		reqBody := model.VerifyRequest{
+			Network: "ethereum-private",
+			App:     "non-existent-app",
+			Version: "1.0.0",
+		}
+		payload, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/verify", bytes.NewReader(payload))
+		rec := httptest.NewRecorder()
+
+		srv.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+
+		var res model.VerifyResponse
+		json.Unmarshal(rec.Body.Bytes(), &res)
+		if res.Status != model.StatusRecordNotFound {
+			t.Errorf("expected status %s, got %s", model.StatusRecordNotFound, res.Status)
+		}
+	})
+
+	// 5. Missing required params returns 400 Bad Request
+	t.Run("Missing app returns 400 Bad Request", func(t *testing.T) {
+		reqBody := model.VerifyRequest{
+			Network: "ethereum-private",
+		}
+		payload, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/verify", bytes.NewReader(payload))
+		rec := httptest.NewRecorder()
+
+		srv.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400, got %d", rec.Code)
+		}
+	})
+}
+
+func TestListRecordsAPI(t *testing.T) {
+	tmpDir := t.TempDir()
+	idx, err := store.NewSQLiteIndex(filepath.Join(tmpDir, "test-records.sqlite"))
+	if err != nil {
+		t.Fatalf("failed to init sqlite: %v", err)
+	}
+	defer idx.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Seed 3 records
+	records := []store.AttestationRecord{
+		{
+			Network:      "ethereum-private",
+			App:          "demo-lib",
+			Version:      "1.0.0",
+			ScanID:       "scan-1",
+			ArtifactHash: "hash1",
+			SBOMHash:     "sbom1",
+			ScanHash:     "scan1",
+			Status:       "included",
+			SubmittedAt:  now.Add(-2 * time.Hour),
+		},
+		{
+			Network:      "ethereum-private",
+			App:          "demo-lib",
+			Version:      "1.1.0",
+			ScanID:       "scan-2",
+			ArtifactHash: "hash2",
+			SBOMHash:     "sbom2",
+			ScanHash:     "scan2",
+			Status:       "included",
+			SubmittedAt:  now.Add(-1 * time.Hour),
+		},
+		{
+			Network:      "ethereum-private",
+			App:          "demo-lib",
+			Version:      "1.2.0",
+			ScanID:       "scan-3",
+			ArtifactHash: "hash3",
+			SBOMHash:     "sbom3",
+			ScanHash:     "scan3",
+			Status:       "included",
+			SubmittedAt:  now,
+		},
+	}
+
+	for _, r := range records {
+		if err := idx.Save(ctx, r); err != nil {
+			t.Fatalf("failed to save record: %v", err)
+		}
+	}
+
+	srv := NewServer(Config{
+		Index: idx,
+	})
+
+	// 1. List all records for demo-lib
+	t.Run("List all records for demo-lib returns total 3", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/records?network=ethereum-private&app=demo-lib", nil)
+		rec := httptest.NewRecorder()
+
+		srv.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+
+		var res model.RecordHistoryResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if res.Total != 3 {
+			t.Errorf("expected total 3, got %d", res.Total)
+		}
+		if len(res.Records) != 3 {
+			t.Errorf("expected 3 records, got %d", len(res.Records))
+		}
+		// First record should be newest (version 1.2.0)
+		if res.Records[0].Version != "1.2.0" {
+			t.Errorf("expected first record to be version 1.2.0, got %s", res.Records[0].Version)
+		}
+	})
+
+	// 2. Filter by version
+	t.Run("Filter by version returns 1 match", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/records?network=ethereum-private&app=demo-lib&version=1.1.0", nil)
+		rec := httptest.NewRecorder()
+
+		srv.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+
+		var res model.RecordHistoryResponse
+		json.Unmarshal(rec.Body.Bytes(), &res)
+		if res.Total != 1 || len(res.Records) != 1 {
+			t.Fatalf("expected 1 record, got total=%d len=%d", res.Total, len(res.Records))
+		}
+		if res.Records[0].Version != "1.1.0" {
+			t.Errorf("expected version 1.1.0, got %s", res.Records[0].Version)
+		}
+	})
+
+	// 3. Pagination with limit and offset
+	t.Run("Pagination with limit=2 and offset=1 returns 2 records", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/records?network=ethereum-private&app=demo-lib&limit=2&offset=1", nil)
+		rec := httptest.NewRecorder()
+
+		srv.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+
+		var res model.RecordHistoryResponse
+		json.Unmarshal(rec.Body.Bytes(), &res)
+		if res.Total != 3 {
+			t.Errorf("expected total 3, got %d", res.Total)
+		}
+		if len(res.Records) != 2 {
+			t.Errorf("expected 2 records, got %d", len(res.Records))
+		}
+		if res.Records[0].Version != "1.1.0" {
+			t.Errorf("expected offset 1 record to be 1.1.0, got %s", res.Records[0].Version)
+		}
+	})
+
+	// 4. Missing required network or app parameter
+	t.Run("Missing network returns 400", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/records?app=demo-lib", nil)
+		rec := httptest.NewRecorder()
+
+		srv.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400 for missing network, got %d", rec.Code)
 		}
 	})
 }
