@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -58,13 +59,62 @@ func main() {
 
 	verdaccioClient := verify.NewVerdaccioClient(verdaccioURL)
 
-	// ponytail: Use MockAdapter for standalone Issue #8. EthereumAdapter will be attached in Issue #9.
-	chainAdapter := chain.NewMockAdapter()
+	// Build network adapter router
+	router := chain.NewRouter()
+
+	// 1. Ethereum Private (Geth --dev)
+	privRPC := env("ETHEREUM_PRIVATE_RPC_URL", "http://127.0.0.1:8545")
+	privContract := env("ETHEREUM_PRIVATE_CONTRACT_ADDRESS", "")
+	oracleKey := env("ETHEREUM_ORACLE_PRIVATE_KEY", "")
+
+	if privContract != "" && oracleKey != "" {
+		privAdapter, err := chain.NewEthereumAdapter(ctx, chain.EthereumConfig{
+			Name:            "ethereum-private",
+			Endpoints:       []string{privRPC},
+			ContractAddress: privContract,
+			PrivateKeyHex:   oracleKey,
+		})
+		if err != nil {
+			log.Printf("warning: failed to init ethereum-private adapter: %v", err)
+		} else {
+			router.Register(privAdapter)
+			log.Printf("Registered chain adapter: ethereum-private (contract: %s, rpc: %s)", privContract, privRPC)
+		}
+	} else {
+		// ponytail: If Geth private chain keys are not supplied, register MockAdapter for ethereum-private
+		mockPriv := chain.NewMockAdapter()
+		router.Register(mockPriv)
+		log.Printf("Notice: ETHEREUM_ORACLE_PRIVATE_KEY or contract address not set; using mock adapter for local testing")
+	}
+
+	// 2. Ethereum Sepolia
+	sepoliaRPC := env("ETHEREUM_SEPOLIA_RPC_URL", "")
+	sepoliaBackupRPC := env("ETHEREUM_SEPOLIA_BACKUP_RPC_URL", "")
+	sepoliaContract := env("ETHEREUM_SEPOLIA_CONTRACT_ADDRESS", "")
+
+	if sepoliaContract != "" && sepoliaRPC != "" && oracleKey != "" {
+		endpoints := []string{sepoliaRPC}
+		if sepoliaBackupRPC != "" {
+			endpoints = append(endpoints, sepoliaBackupRPC)
+		}
+		sepoliaAdapter, err := chain.NewEthereumAdapter(ctx, chain.EthereumConfig{
+			Name:            "ethereum-sepolia",
+			Endpoints:       endpoints,
+			ContractAddress: sepoliaContract,
+			PrivateKeyHex:   oracleKey,
+		})
+		if err != nil {
+			log.Printf("warning: failed to init ethereum-sepolia adapter: %v", err)
+		} else {
+			router.Register(sepoliaAdapter)
+			log.Printf("Registered chain adapter: ethereum-sepolia (endpoints: %s)", strings.Join(endpoints, ", "))
+		}
+	}
 
 	server := api.NewServer(api.Config{
 		S3Store:         s3Store,
 		Index:           idx,
-		ChainAdapter:    chainAdapter,
+		Router:          router,
 		VerdaccioClient: verdaccioClient,
 		MaxGrypeDBAge:   maxAge,
 	})
@@ -81,6 +131,7 @@ func main() {
 
 	go func() {
 		log.Printf("Oracle service listening on http://127.0.0.1:%s", port)
+		log.Printf("Supported networks: %v", router.SupportedNetworks())
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("HTTP server error: %v", err)
 		}

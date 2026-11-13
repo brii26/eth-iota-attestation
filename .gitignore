@@ -5,6 +5,7 @@ sa.json
 
 # Local only
 progress.md
+graphify-out/
 smart-contract/iota/results/
 
 # Build output and secrets

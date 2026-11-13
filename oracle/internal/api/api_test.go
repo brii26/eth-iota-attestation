@@ -50,9 +50,12 @@ func setupTestServer(t *testing.T, artifactContent []byte) (*Server, *store.SQLi
 
 	vClient := verify.NewVerdaccioClient(verdaccioSrv.URL)
 
+	router := chain.NewRouter()
+	router.Register(mockChain)
+
 	srv := NewServer(Config{
 		Index:           idx,
-		ChainAdapter:    mockChain,
+		Router:          router,
 		VerdaccioClient: vClient,
 		MaxGrypeDBAge:   24 * time.Hour,
 	})
@@ -260,6 +263,24 @@ func TestAttestationAPI(t *testing.T) {
 
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("expected status 404, got %d", rec.Code)
+		}
+	})
+
+	// 9. Unsupported Network Returns 400
+	t.Run("Unsupported Network Returns 400 Bad Request", func(t *testing.T) {
+		badNetReq := reqBody
+		badNetReq.ScanID = "55555555-6666-7777-8888-999999999999"
+		badNetReq.Network = "unsupported-network"
+
+		payload, _ := json.Marshal(badNetReq)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/attestations", bytes.NewReader(payload))
+		req.Header.Set("Authorization", "Bearer mock-ci-token")
+		rec := httptest.NewRecorder()
+
+		srv.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400 for unsupported network, got %d", rec.Code)
 		}
 	})
 }
