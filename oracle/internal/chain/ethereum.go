@@ -255,6 +255,108 @@ func (a *EthereumAdapter) IsSignerAuthorized(ctx context.Context, signer string)
 	return a.caller.IsAuthorizedOracle(&bind.CallOpts{Context: ctx}, addr)
 }
 
+// CurrentBlockNumber queries the latest block number from the primary RPC client.
+func (a *EthereumAdapter) CurrentBlockNumber(ctx context.Context) (uint64, error) {
+	client := a.multiRPC.CurrentClient()
+	return client.BlockNumber(ctx)
+}
+
+// FilterVerificationRequests queries VerificationRequested events between startBlock and endBlock.
+func (a *EthereumAdapter) FilterVerificationRequests(ctx context.Context, startBlock, endBlock *uint64) ([]VerificationEvent, error) {
+	opts := &bind.FilterOpts{
+		Context: ctx,
+	}
+	if startBlock != nil {
+		opts.Start = *startBlock
+	}
+	opts.End = endBlock
+
+	iter, err := a.filterer.FilterVerificationRequested(opts, nil, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("filter verification requested events: %w", err)
+	}
+	defer iter.Close()
+
+	var events []VerificationEvent
+	for iter.Next() {
+		ev := iter.Event
+		if ev == nil {
+			continue
+		}
+		events = append(events, VerificationEvent{
+			RequestID:   ev.RequestId,
+			RecordID:    ev.RecordId,
+			Requester:   ev.Requester.Hex(),
+			BlockNumber: ev.Raw.BlockNumber,
+		})
+	}
+	if err := iter.Error(); err != nil {
+		return nil, fmt.Errorf("iterator error: %w", err)
+	}
+	return events, nil
+}
+
+// FulfillVerification submits a verification result for a request on-chain.
+func (a *EthereumAdapter) FulfillVerification(ctx context.Context, requestID *big.Int, status uint8, stale bool) (*Receipt, error) {
+	client := a.multiRPC.CurrentClient()
+
+	nonce, releaseNonce, err := a.nonceMgr.Acquire(ctx, client)
+	if err != nil {
+		return nil, fmt.Errorf("acquire nonce: %w", err)
+	}
+
+	auth, err := bind.NewKeyedTransactorWithChainID(a.privKey, a.chainID)
+	if err != nil {
+		releaseNonce(false)
+		return nil, fmt.Errorf("create transactor: %w", err)
+	}
+
+	auth.Nonce = big.NewInt(int64(nonce))
+	auth.Context = ctx
+
+	tipCap, err := client.SuggestGasTipCap(ctx)
+	if err == nil {
+		auth.GasTipCap = tipCap
+	}
+
+	result := registry.AttestationRegistryVerificationResult{
+		Status: status,
+		Stale:  stale,
+	}
+
+	tx, err := a.transactor.FulfillVerification(auth, requestID, result)
+	if err != nil {
+		releaseNonce(false)
+		return nil, fmt.Errorf("send fulfillVerification transaction: %w", err)
+	}
+
+	releaseNonce(true)
+	submittedAt := time.Now().UTC()
+
+	waitCtx, cancel := context.WithTimeout(ctx, a.txTimeout)
+	defer cancel()
+
+	rawReceipt, err := bind.WaitMined(waitCtx, client, tx)
+	if err != nil {
+		return nil, fmt.Errorf("wait for fulfill transaction %s: %w", tx.Hash().Hex(), err)
+	}
+
+	if rawReceipt.Status != types.ReceiptStatusSuccessful {
+		return nil, fmt.Errorf("fulfill transaction %s reverted on chain", tx.Hash().Hex())
+	}
+
+	includedAt := time.Now().UTC()
+	return &Receipt{
+		TxRef:       tx.Hash().Hex(),
+		RecordID:    requestID.String(),
+		BlockNumber: rawReceipt.BlockNumber.Uint64(),
+		GasUsed:     rawReceipt.GasUsed,
+		TxSize:      uint64(tx.Size()),
+		SubmittedAt: submittedAt,
+		IncludedAt:  includedAt,
+	}, nil
+}
+
 // Close releases the RPC connections.
 func (a *EthereumAdapter) Close() {
 	a.multiRPC.Close()
