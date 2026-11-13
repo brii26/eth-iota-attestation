@@ -249,6 +249,12 @@ func (a *EthereumAdapter) ReadRecord(ctx context.Context, query Query) (*ChainRe
 	}, nil
 }
 
+// IsSignerAuthorized checks if the signer is currently an authorized oracle on-chain.
+func (a *EthereumAdapter) IsSignerAuthorized(ctx context.Context, signer string) (bool, error) {
+	addr := common.HexToAddress(signer)
+	return a.caller.IsAuthorizedOracle(&bind.CallOpts{Context: ctx}, addr)
+}
+
 // Close releases the RPC connections.
 func (a *EthereumAdapter) Close() {
 	a.multiRPC.Close()

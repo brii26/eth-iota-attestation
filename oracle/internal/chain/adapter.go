@@ -63,16 +63,18 @@ type ChainRecord struct {
 type Adapter interface {
 	WriteRecord(ctx context.Context, rec Record) (*Receipt, error)
 	ReadRecord(ctx context.Context, query Query) (*ChainRecord, error)
+	IsSignerAuthorized(ctx context.Context, signer string) (bool, error)
 	Name() string
 }
 
 // MockAdapter provides an in-memory chain adapter for tests and standalone oracle runs.
 type MockAdapter struct {
-	name     string
-	mu       sync.Mutex
-	records  map[string]ChainRecord // key: app@version
-	receipts map[string]Receipt     // key: network:scanId
-	fail     bool
+	name             string
+	mu               sync.Mutex
+	records          map[string]ChainRecord // key: app@version
+	receipts         map[string]Receipt     // key: network:scanId
+	fail             bool
+	untrustedSigners map[string]bool
 }
 
 // NewMockAdapter constructs a new MockAdapter with an optional name (defaults to "ethereum-private").
@@ -82,9 +84,10 @@ func NewMockAdapter(name ...string) *MockAdapter {
 		adapterName = name[0]
 	}
 	return &MockAdapter{
-		name:     adapterName,
-		records:  make(map[string]ChainRecord),
-		receipts: make(map[string]Receipt),
+		name:             adapterName,
+		records:          make(map[string]ChainRecord),
+		receipts:         make(map[string]Receipt),
+		untrustedSigners: make(map[string]bool),
 	}
 }
 
@@ -148,10 +151,21 @@ func (m *MockAdapter) WriteRecord(ctx context.Context, rec Record) (*Receipt, er
 	return &receipt, nil
 }
 
-// ReadRecord looks up a record by app and version in the mock store.
+// ReadRecord looks up a record by recordId or app and version in the mock store.
 func (m *MockAdapter) ReadRecord(ctx context.Context, query Query) (*ChainRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if query.RecordID != nil {
+		idDec := query.RecordID.String()
+		idHex := "0x" + query.RecordID.Text(16)
+		for _, rec := range m.records {
+			if rec.RecordID == idDec || rec.RecordID == idHex {
+				return &rec, nil
+			}
+		}
+		return nil, ErrRecordNotFound
+	}
 
 	key := fmt.Sprintf("%s@%s", query.App, query.Version)
 	rec, ok := m.records[key]
@@ -159,6 +173,30 @@ func (m *MockAdapter) ReadRecord(ctx context.Context, query Query) (*ChainRecord
 		return nil, ErrRecordNotFound
 	}
 	return &rec, nil
+}
+
+// SetRecord manually sets or overrides a record in the mock store.
+func (m *MockAdapter) SetRecord(rec ChainRecord) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.records[fmt.Sprintf("%s@%s", rec.App, rec.Version)] = rec
+}
+
+// SetSignerAuthorized configures whether a signer is considered an authorized oracle in the mock.
+func (m *MockAdapter) SetSignerAuthorized(signer string, authorized bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.untrustedSigners[signer] = !authorized
+}
+
+// IsSignerAuthorized checks if the signer address is currently authorized.
+func (m *MockAdapter) IsSignerAuthorized(ctx context.Context, signer string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.untrustedSigners[signer] {
+		return false, nil
+	}
+	return true, nil
 }
 
 // Records returns a slice of all recorded records in the mock.

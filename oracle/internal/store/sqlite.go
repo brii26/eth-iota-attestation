@@ -152,6 +152,74 @@ func (s *SQLiteIndex) GetStatus(ctx context.Context, network, scanID string) (*m
 	return &st, nil
 }
 
+// ListRecords retrieves historical attestation records filtered by network, app, and optional version.
+func (s *SQLiteIndex) ListRecords(ctx context.Context, network, app, version string, limit, offset int) ([]model.RecordItem, int, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	whereClause := "WHERE 1=1"
+	var args []interface{}
+	if network != "" {
+		whereClause += " AND network = ?"
+		args = append(args, network)
+	}
+	if app != "" {
+		whereClause += " AND app = ?"
+		args = append(args, app)
+	}
+	if version != "" {
+		whereClause += " AND version = ?"
+		args = append(args, version)
+	}
+
+	var total int
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM attestations %s", whereClause)
+	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count records: %w", err)
+	}
+
+	query := fmt.Sprintf(`
+	SELECT COALESCE(record_id, ''), network, app, version, scan_id, artifact_hash, sbom_hash, scan_hash, status, COALESCE(tx_ref, ''), submitted_at, included_at
+	FROM attestations
+	%s
+	ORDER BY submitted_at DESC
+	LIMIT ? OFFSET ?
+	`, whereClause)
+
+	queryArgs := append(args, limit, offset)
+	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query records history: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]model.RecordItem, 0)
+	for rows.Next() {
+		var item model.RecordItem
+		var includedAt sql.NullTime
+		if err := rows.Scan(
+			&item.RecordID, &item.Network, &item.App, &item.Version, &item.ScanID,
+			&item.ArtifactHash, &item.SBOMHash, &item.ScanHash, &item.Status, &item.TxRef,
+			&item.SubmittedAt, &includedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan record row: %w", err)
+		}
+		if includedAt.Valid {
+			item.IncludedAt = &includedAt.Time
+		}
+		items = append(items, item)
+	}
+
+	return items, total, rows.Err()
+}
+
 // Close closes the underlying SQLite database connection.
 func (s *SQLiteIndex) Close() error {
 	return s.db.Close()
