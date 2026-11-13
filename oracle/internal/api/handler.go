@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,10 +19,12 @@ import (
 // Config holds runtime dependencies and options for the API server.
 type Config struct {
 	S3Store         *store.S3Store
+	BlobStore       verify.BlobStore
 	Index           *store.SQLiteIndex
 	ChainAdapter    chain.Adapter
 	Router          *chain.Router
 	VerdaccioClient *verify.VerdaccioClient
+	ArtifactFetcher verify.ArtifactFetcher
 	MaxGrypeDBAge   time.Duration
 }
 
@@ -30,6 +33,7 @@ type Server struct {
 	cfg    Config
 	mux    *http.ServeMux
 	router http.Handler
+	engine *verify.Engine
 }
 
 // NewServer sets up routes and returns an initialized Server.
@@ -38,9 +42,25 @@ func NewServer(cfg Config) *Server {
 		cfg.MaxGrypeDBAge = 48 * time.Hour
 	}
 
+	var blobStore verify.BlobStore = cfg.BlobStore
+	if blobStore == nil && cfg.S3Store != nil {
+		blobStore = cfg.S3Store
+	}
+	var artFetcher verify.ArtifactFetcher = cfg.ArtifactFetcher
+	if artFetcher == nil && cfg.VerdaccioClient != nil {
+		artFetcher = cfg.VerdaccioClient
+	}
+
+	engine := verify.NewEngine(verify.EngineConfig{
+		BlobStore:       blobStore,
+		ArtifactFetcher: artFetcher,
+		MaxGrypeDBAge:   cfg.MaxGrypeDBAge,
+	})
+
 	s := &Server{
-		cfg: cfg,
-		mux: http.NewServeMux(),
+		cfg:    cfg,
+		mux:    http.NewServeMux(),
+		engine: engine,
 	}
 	s.routes()
 	return s
@@ -54,6 +74,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/attestations", s.handleCreateAttestation)
 	s.mux.HandleFunc("GET /api/v1/attestations/{network}/{scanId}", s.handleGetAttestation)
+	s.mux.HandleFunc("POST /api/v1/verify", s.handleVerify)
+	s.mux.HandleFunc("GET /api/v1/records", s.handleListRecords)
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, message string) {
@@ -253,4 +275,94 @@ func (s *Server) handleGetAttestation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var req model.VerifyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid JSON payload")
+		return
+	}
+
+	if req.Network == "" || req.App == "" {
+		writeJSONError(w, http.StatusBadRequest, model.ErrCodeInvalidInput, "network and app are required")
+		return
+	}
+
+	if req.RecordID == "" && req.Version == "" {
+		writeJSONError(w, http.StatusBadRequest, model.ErrCodeInvalidInput, "version is required when recordId is not specified")
+		return
+	}
+
+	var chainAdapter chain.Adapter
+	if s.cfg.Router != nil {
+		ad, err := s.cfg.Router.Get(req.Network)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, model.ErrCodeInvalidInput, fmt.Sprintf("unsupported network %q", req.Network))
+			return
+		}
+		chainAdapter = ad
+	} else if s.cfg.ChainAdapter != nil {
+		chainAdapter = s.cfg.ChainAdapter
+	} else {
+		writeJSONError(w, http.StatusInternalServerError, model.ErrCodeInternal, "no chain adapter configured")
+		return
+	}
+
+	res, err := s.engine.Verify(ctx, chainAdapter, req)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, model.ErrCodeInternal, fmt.Sprintf("verification failed: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleListRecords(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	q := r.URL.Query()
+
+	network := q.Get("network")
+	app := q.Get("app")
+	version := q.Get("version")
+
+	if network == "" || app == "" {
+		writeJSONError(w, http.StatusBadRequest, model.ErrCodeInvalidInput, "network and app query parameters are required")
+		return
+	}
+
+	if s.cfg.Index == nil {
+		writeJSONError(w, http.StatusInternalServerError, model.ErrCodeInternal, "index store unavailable")
+		return
+	}
+
+	limit := 20
+	if l := q.Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	offset := 0
+	if o := q.Get("offset"); o != "" {
+		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	records, total, err := s.cfg.Index.ListRecords(ctx, network, app, version, limit, offset)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, model.ErrCodeInternal, fmt.Sprintf("failed to list records: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, model.RecordHistoryResponse{
+		Network: network,
+		App:     app,
+		Version: version,
+		Total:   total,
+		Records: records,
+	})
 }
