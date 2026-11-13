@@ -20,6 +20,7 @@ type Config struct {
 	S3Store         *store.S3Store
 	Index           *store.SQLiteIndex
 	ChainAdapter    chain.Adapter
+	Router          *chain.Router
 	VerdaccioClient *verify.VerdaccioClient
 	MaxGrypeDBAge   time.Duration
 }
@@ -90,6 +91,21 @@ func (s *Server) handleCreateAttestation(w http.ResponseWriter, r *http.Request)
 	// Validate inputs
 	if req.Network == "" || req.App == "" || req.Version == "" || req.ScanID == "" {
 		writeJSONError(w, http.StatusBadRequest, model.ErrCodeInvalidInput, "network, app, version, and scanId are required")
+		return
+	}
+
+	var chainAdapter chain.Adapter
+	if s.cfg.Router != nil {
+		ad, err := s.cfg.Router.Get(req.Network)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, model.ErrCodeInvalidInput, fmt.Sprintf("unsupported network %q", req.Network))
+			return
+		}
+		chainAdapter = ad
+	} else if s.cfg.ChainAdapter != nil {
+		chainAdapter = s.cfg.ChainAdapter
+	} else {
+		writeJSONError(w, http.StatusInternalServerError, model.ErrCodeInternal, "no chain adapter configured")
 		return
 	}
 	if len(req.SBOM) == 0 || len(req.Scan) == 0 {
@@ -196,7 +212,7 @@ func (s *Server) handleCreateAttestation(w http.ResponseWriter, r *http.Request)
 		ScanHash:     scanHashBytes,
 	}
 
-	receipt, err := s.cfg.ChainAdapter.WriteRecord(ctx, chainRec)
+	receipt, err := chainAdapter.WriteRecord(ctx, chainRec)
 	if err != nil {
 		_ = s.cfg.Index.UpdateStatus(ctx, req.Network, req.ScanID, "failed", "", "", nil)
 		writeJSONError(w, http.StatusBadGateway, model.ErrCodeDependencyUnavailable, fmt.Sprintf("failed to write record to chain: %v", err))
