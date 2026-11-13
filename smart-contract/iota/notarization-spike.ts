@@ -62,10 +62,7 @@ async function main() {
   if (network !== "testnet" && network !== "localnet") {
     throw new Error("This spike only supports testnet or localnet");
   }
-  const packageId = process.env.IOTA_NOTARIZATION_PKG_ID;
-  if (!packageId || !/^0x[0-9a-fA-F]{64}$/.test(packageId)) {
-    throw new Error("Set IOTA_NOTARIZATION_PKG_ID to the deployed notarization package ID");
-  }
+  let packageId = process.env.IOTA_NOTARIZATION_PKG_ID;
   const lockSeconds = Number(process.env.IOTA_LOCK_SECONDS ?? "120");
   if (!Number.isSafeInteger(lockSeconds) || lockSeconds < 30 || lockSeconds > 600) {
     throw new Error("IOTA_LOCK_SECONDS must be an integer from 30 to 600");
@@ -75,11 +72,24 @@ async function main() {
     import("@iota/iota-sdk/client"),
     import("@iota/iota-sdk/keypairs/ed25519"),
     import("@iota/iota-sdk/faucet"),
-    import("@iota/iota-interaction-ts/node/test_utils"),
+    import("@iota/iota-interaction-ts/node"),
   ]);
   const { NotarizationClient, NotarizationClientReadOnly, TimeLock, State } = notarization;
   const rpcUrl = process.env.IOTA_RPC_URL ?? sdk.getFullnodeUrl(network);
   const rpc = new sdk.IotaClient({ url: rpcUrl });
+
+  let readOnly: any;
+  if (packageId && /^0x[0-9a-fA-F]{64}$/.test(packageId)) {
+    readOnly = await NotarizationClientReadOnly.createWithPkgId(rpc as any, packageId);
+  } else {
+    try {
+      readOnly = await NotarizationClientReadOnly.create(rpc as any);
+      packageId = readOnly.packageId();
+    } catch {
+      throw new Error("Set IOTA_NOTARIZATION_PKG_ID to the deployed notarization package ID");
+    }
+  }
+
   const secret = process.env.IOTA_PRIVATE_KEY;
   let keypair;
   if (!secret) keypair = accounts.Ed25519Keypair.generate();
@@ -104,13 +114,17 @@ async function main() {
     assert.equal(chainIdentifier, officialIdentifier, "RPC does not match the official testnet chain");
   }
   if (process.env.IOTA_REQUEST_FAUCET === "1") {
-    await faucet.requestIotaFromFaucetV0({ host: faucet.getFaucetHost(network), recipient: address });
+    try {
+      const host = process.env.IOTA_FAUCET_URL ?? faucet.getFaucetHost(network);
+      await faucet.requestIotaFromFaucetV0({ host, recipient: address });
+    } catch (err) {
+      console.warn(`Faucet request skipped or failed: ${message(err)}`);
+    }
   }
   if (BigInt((await rpc.getBalance({ owner: address })).totalBalance) === 0n) {
     throw new Error("Fund the spike account or enable IOTA_REQUEST_FAUCET before running");
   }
-  const readOnly = await NotarizationClientReadOnly.createWithPkgId(rpc, packageId);
-  const client = await NotarizationClient.create(readOnly, new interaction.Ed25519KeypairSigner(keypair));
+  const client = await NotarizationClient.create(readOnly, new interaction.test_utils.Ed25519KeypairSigner(keypair as any));
 
   async function ledgerTimeMs() {
     const latest = await rpc.getLatestCheckpointSequenceNumber();

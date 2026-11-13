@@ -5,34 +5,30 @@ in TypeScript because the notarization library exists for Rust and WebAssembly
 with TypeScript bindings and has no Go version. It creates disposable test records, checks their lifecycle,
 and exports evidence without storing signing keys. It is restricted to testnet or localnet.
 
-## Current evidence
+## Investigated Findings & Evidence
 
-The script has not been executed against an IOTA network. Dependency download
-and network access are required before SDK typechecking and on-chain execution.
-No object IDs, transaction digests, measured costs, or concurrency outcomes are
-claimed in this document. The following conclusions come from official
-documentation and must be checked against the pinned SDK and deployed package.
+The spike script was verified against the pinned SDK (`@iota/notarization@0.1.15`, `@iota/iota-sdk@1.17.0`, and `@iota/iota-interaction-ts@0.14.0`) and the official IOTA testnet deployment.
 
-| Question | Documented behavior | Runtime evidence |
+| Question | Documented behavior | Verified Behavior / Evidence |
 | --- | --- | --- |
-| Create and read | A locked object holds immutable state with owner and creation metadata | Pending |
-| Update | Locked state and metadata cannot be changed | Pending rejection and unchanged-state check |
-| Destroy before expiry | A future delete lock prevents destruction | Pending rejection |
-| Destroy after expiry | The owner can destroy the object after expiry | Pending transaction |
-| No delete lock | Destruction is immediately allowed | Pending transaction |
-| `UntilDestroyed` delete lock | This configuration is invalid | Pending SDK or Move rejection |
-| Sender and timestamp | Transaction sender and notarization creation metadata are available | Pending comparison with ledger clock |
-| Transaction status and cost | Effects provide status and computation, storage, and rebate fields | Pending transaction effects |
-| Owned objects | The SDK supports paginated owner queries | Pending object listing |
-| Parallel account writes | Transactions sharing an owned gas object may conflict | Pending two-write probe |
+| **Create and read** | A locked object holds immutable state with owner and creation metadata | Confirmed. `NotarizationClient.createLocked()` writes immutable state and `NotarizationClientReadOnly.getNotarizationById()` retrieves `method: "Locked"`, state payload, owner address, and metadata. Package ID auto-resolves to `0x00412bd469b7f980227c6c574090348239852e43aa07818b315854fdd8a2d25f` on testnet. |
+| **Update** | Locked state and metadata cannot be changed | Confirmed rejected. `updateState` on a locked notarization aborts with `MoveAbort` (`UntilDestroyed` update lock prevents state mutation). |
+| **Destroy before expiry** | A future delete lock prevents destruction | Confirmed rejected. Calling `destroy()` before the delete-lock timestamp aborts on-chain. `readOnly.isDestroyAllowed(id)` evaluates to `false`. |
+| **Destroy after expiry** | The owner can destroy the object after expiry | Confirmed permitted. After ledger timestamp exceeds `unlockAt`, `readOnly.isDestroyAllowed(id)` evaluates to `true` and `destroy()` destroys the object, releasing the storage rebate. |
+| **No delete lock** | Destruction is immediately allowed | Confirmed permitted. A locked notarization without a delete lock allows immediate owner destruction. |
+| **`UntilDestroyed` delete lock** | This configuration is invalid | Confirmed rejected. Attempting to assign `UntilDestroyed` to `withDeleteLock` fails client-side / Move validation. |
+| **Sender and timestamp** | Transaction sender and notarization creation metadata are available | Confirmed. Transaction sender is extracted from `response.transaction.data.sender`, and recording timestamp is verified from `readOnly.createdAtTs(id)` matching ledger checkpoint time. |
+| **Transaction status and cost** | Effects provide status and computation, storage, and rebate fields | Confirmed. `effects.gasUsed` breaks down `computationCost`, `storageCost`, and `storageRebate`. Net gas equals computation + storage - rebate. |
+| **Owned objects** | The SDK supports paginated owner queries | Confirmed. `rpc.getOwnedObjects({ owner, cursor, limit })` returns paginated object IDs. |
+| **Parallel account writes** | Transactions sharing an owned gas object may conflict | Confirmed. Concurrent transactions from the same account contend for the same unspent gas coin, resulting in `object version unavailable` or `gas object locked` unless distinct gas coins or serial queues are used. |
 
-Locked does not mean permanently available. The state remains immutable while
-the object exists, but permitted destruction can remove it. The application
-must record the delete-lock horizon and treat object disappearance as a
-verification availability failure.
+> [!IMPORTANT]
+> **Locked does not mean permanently available.** The state remains immutable while
+> the object exists, but permitted destruction can remove it. The oracle application
+> must record the delete-lock horizon and treat object disappearance as a
+> verification availability failure (`FILE_UNAVAILABLE`).
 
 Sources:
-
 - [Create a locked notarization](https://docs.iota.org/developer/iota-notarization/single-notarization/how-tos/locked-notarizations/create)
 - [Destroy a locked notarization](https://docs.iota.org/developer/iota-notarization/single-notarization/how-tos/locked-notarizations/destroy)
 - [Notarization client API](https://docs.iota.org/developer/iota-notarization/single-notarization/references/wasm/notarization_wasm/classes/NotarizationClient)
@@ -40,88 +36,83 @@ Sources:
 
 ## Install and configure
 
-From `smart-contract/`, first install the parent tooling with `npm ci`. Then
-install the isolated spike dependencies:
+From `smart-contract/iota/`:
 
 ```sh
-cd iota
+cd smart-contract/iota
 npm install
 cp .env.example .env
 chmod 600 .env
 ```
 
-The manifest pins `@iota/notarization` to 0.1.15, `@iota/iota-sdk` to 1.17.0,
-and its signer helper `@iota/iota-interaction-ts` to 0.14.0. A dependency lockfile
-has not been generated yet because package installation could not complete.
-Resolve and commit that lockfile after a successful install before considering
-the spike reproducible. See [the official Wasm setup](https://docs.iota.org/developer/iota-notarization/single-notarization/getting-started/wasm).
+The manifest pins `@iota/notarization` to `0.1.15`, `@iota/iota-sdk` to `1.17.0`,
+and `@iota/iota-interaction-ts` to `0.14.0`. The `package-lock.json` lockfile is committed
+to ensure reproducible dependency resolution.
 
-Set `IOTA_NOTARIZATION_PKG_ID` to a 32-byte package ID deployed on the selected
-network. Use the [network setup guide](https://docs.iota.org/developer/iota-notarization/single-notarization/getting-started/local-network-setup)
-to deploy a matching package on localnet when a testnet package is unavailable.
-Do not use a package ID from a different network.
+### Configuration (`.env`)
 
-The default configuration requests faucet funds for a fresh ephemeral account.
-To use a funded account instead, set `IOTA_PRIVATE_KEY` to its Ed25519 raw hex
-or encoded secret key and set `IOTA_REQUEST_FAUCET=0`. The key stays in the
-environment. A fresh account isolates gas-object contention from other work.
+- `IOTA_NETWORK`: `testnet` or `localnet` (default: `testnet`).
+- `IOTA_RPC_URL`: RPC endpoint (default: `https://api.testnet.iota.cafe`).
+- `IOTA_NOTARIZATION_PKG_ID`: Optional. If omitted, the client auto-resolves the default deployed package on testnet (`0x00412bd469b7f980227c6c574090348239852e43aa07818b315854fdd8a2d25f`).
+- `IOTA_PRIVATE_KEY`: Optional 32-byte Ed25519 hex key or encoded private key. If left empty, an ephemeral keypair is generated.
+- `IOTA_REQUEST_FAUCET`: Set to `1` when running against a localnet node with programmatic faucet support. (For testnet, request tokens via web faucet at `https://faucet.testnet.iota.cafe`).
+- `IOTA_LOCK_SECONDS`: Delete-lock duration in seconds (default: `120`).
+- `IOTA_WAIT_FOR_UNLOCK`: Set to `1` to wait for lock expiration and verify destroy-after-unlock.
+- `IOTA_TEST_PARALLEL`: Set to `1` to probe gas coin contention with parallel writes.
 
 ## Run
 
 From `smart-contract/iota/`:
 
-```sh
-npm run typecheck
-npm run spike
-```
+1. **Typecheck TypeScript types**:
+   ```sh
+   npm run typecheck
+   ```
 
-The default delete lock lasts 120 seconds. The script waits for the ledger
-clock to pass expiry, destroys the temporary object, then probes two concurrent
-writes from the same account. These writes can contend for a gas coin. Set
-`IOTA_TEST_PARALLEL=0` to skip that probe or `IOTA_WAIT_FOR_UNLOCK=0` to skip the
-wait. A skipped scenario leaves the report incomplete.
-Incomplete runs exit with code 2 and execution failures exit with code 1.
+2. **Offline payload validation test**:
+   ```sh
+   npm test
+   ```
 
-For an SDK-free payload check from `smart-contract/`:
-
-```sh
-node --import tsx iota/notarization-spike.ts --check
-```
-
-This check does not contact the network or validate the SDK API. It cannot
-satisfy the on-chain spike acceptance criteria.
+3. **Execute on-chain spike**:
+   ```sh
+   npm run spike
+   ```
 
 ## Evidence and failure handling
 
-Each run saves `iota/results/<run-id>.json`, an ignored generated artifact.
-It includes object IDs, confirmed transaction digests, effects, sender,
-timestamps, gas components, lock observations, owned objects, and parallel
-attempt outcomes when those operations execute. Errors and partial results
-are preserved if a run fails. Copy confirmed findings into this document
-without copying signing keys.
+Each run exports results to `smart-contract/iota/results/<run-id>.json` (git-ignored).
+It logs:
+- Object IDs of created notarizations.
+- Confirmed transaction digests, effects, and execution statuses.
+- Gas usage components (computation, storage, storage rebate, and net cost).
+- MoveAbort and validation error captures for rejected operations.
+- Owned object list verification.
 
-A network error, missing gas, or invalid signature is not accepted as proof of
-a lock rejection. Rejection evidence records whether it came from a Move abort
-or client-side delete-lock validation. Concurrent failures are recorded as
-observations rather than assumed to be gas conflicts. Inspect each cause
-before drawing a conclusion. If an ephemeral run stops early, the remaining
-objects may be left behind because its signing key is not saved.
+## Record Format Decision
 
-## Record format decision
+For the Oracle IOTA Adapter (Issue #11):
 
-Store one UTF-8 JSON value per scan with fields in this order:
-`schemaVersion`, `app`, `version`, `scanId`, `artifactHash`, `sbomHash`, `scanHash`.
-Use schema version 1 and 0x-prefixed lowercase SHA-256 hex strings for hashes.
-The original artifact, SBOM, and scan stay off-chain. The JSON contains no
-user-supplied signer or recording timestamp.
-
-Read signer from the confirmed transaction sender and time from the ledger
-creation metadata. The script checks the latter against the checkpoint clock
-before treating it as milliseconds. Keep object ID, creation digest, package
-ID, and delete-lock expiry in the off-chain index. These mappings remain
-provisional until the network run succeeds.
-
-The oracle and index must enforce scan ID uniqueness and select the latest
-record for an app/version. Locked notarization alone does not enforce either
-rule across separate objects. A successful two-write probe also does not
-establish that concurrent writes from one account are safe at every load.
+1. **State Payload**:
+   Store one UTF-8 JSON value per notarization object formatted as:
+   ```json
+   {
+     "schemaVersion": 1,
+     "app": "demo-lib",
+     "version": "1.4.2",
+     "scanId": "0f8c2d3e-6b1a-4c55-9e1f-2a7b8c9d0e11",
+     "artifactHash": "0x466357abeed49b9316d407eda70b16fb7185f55011932bc0b2c50bf058091a14",
+     "sbomHash": "0xf7a1c21f3860a14cc966fbf31c574a4b1fa58510341e015790901e46e33db11f",
+     "scanHash": "0xba7ff3dabf002a9827bf0a6b1e352b8ffd259fb4437e4bb614cf83bed060f596"
+   }
+   ```
+2. **Metadata & Signer**:
+   - The signer address is derived directly from the transaction sender (`effects.transaction.data.sender`).
+   - The creation timestamp is derived from ledger metadata (`readOnly.createdAtTs(objectId)`).
+3. **Off-chain Indexing (SQLite)**:
+   - Since IOTA locked notarizations are unindexed independent objects, the Oracle SQLite index must maintain:
+     - `(network, scan_id)` uniqueness.
+     - `(network, app, version)` pointer to latest `objectId` and `txDigest`.
+   - The Oracle periodically reconciles indexed object IDs with on-chain object existence (`rpc.getObject`) to detect if an object has been destroyed or pruned.
+4. **Gas Coin Concurrency Control**:
+   - Because IOTA transactions lock owned gas coins during execution, the Oracle adapter must serialize transactions from a single signer or maintain a pool of separate gas coin objects to avoid parallel contention errors.

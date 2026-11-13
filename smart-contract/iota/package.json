@@ -4,8 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "spike": "node --env-file-if-exists=.env --import tsx notarization-spike.ts",
-    "typecheck": "tsc --noEmit"
+    "spike": "node --env-file-if-exists=.env --experimental-strip-types notarization-spike.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types notarization-spike.ts --check"
   },
   "dependencies": {
     "@iota/iota-interaction-ts": "0.14.0",
