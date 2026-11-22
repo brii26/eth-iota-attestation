@@ -6,13 +6,13 @@ import (
 
 // Integrity statuses specified by Issue #10.
 const (
-	StatusValid             = "VALID"
-	StatusArtifactMismatch  = "ARTIFACT_MISMATCH"
-	StatusSBOMMismatch      = "SBOM_MISMATCH"
-	StatusScanMismatch      = "SCAN_MISMATCH"
-	StatusUntrustedSigner   = "UNTRUSTED_SIGNER"
-	StatusRecordNotFound    = "RECORD_NOT_FOUND"
-	StatusFileUnavailable   = "FILE_UNAVAILABLE"
+	StatusValid            = "VALID"
+	StatusArtifactMismatch = "ARTIFACT_MISMATCH"
+	StatusSBOMMismatch     = "SBOM_MISMATCH"
+	StatusScanMismatch     = "SCAN_MISMATCH"
+	StatusUntrustedSigner  = "UNTRUSTED_SIGNER"
+	StatusRecordNotFound   = "RECORD_NOT_FOUND"
+	StatusFileUnavailable  = "FILE_UNAVAILABLE"
 
 	CheckMatch       = "MATCH"
 	CheckMismatch    = "MISMATCH"
@@ -37,15 +37,18 @@ type VerifyChecks struct {
 
 // VerifyResponse represents the structured result of POST /api/v1/verify.
 type VerifyResponse struct {
-	Network    string       `json:"network"`
-	App        string       `json:"app"`
-	Version    string       `json:"version"`
-	RecordID   string       `json:"recordId,omitempty"`
-	Status     string       `json:"status"`
-	Stale      bool         `json:"stale"`
-	Checks     VerifyChecks `json:"checks"`
-	Signer     string       `json:"signer,omitempty"`
-	RecordedAt *time.Time   `json:"recordedAt,omitempty"`
+	Network        string         `json:"network"`
+	App            string         `json:"app"`
+	Version        string         `json:"version"`
+	RecordID       string         `json:"recordId,omitempty"`
+	Status         string         `json:"status"`
+	Stale          bool           `json:"stale"`
+	Checks         VerifyChecks   `json:"checks"`
+	Signer         string         `json:"signer,omitempty"`
+	RecordedAt     *time.Time     `json:"recordedAt,omitempty"`
+	ScanID         string         `json:"scanId,omitempty"`
+	RecordHashes   *ClaimedHashes `json:"recordHashes,omitempty"`
+	GrypeDBBuiltAt *time.Time     `json:"grypeDbBuiltAt,omitempty"`
 }
 
 // RecordItem represents an entry in the record history list.

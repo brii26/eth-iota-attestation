@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -78,6 +79,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/attestations/{network}/{scanId}", s.handleGetAttestation)
 	s.mux.HandleFunc("POST /api/v1/verify", s.handleVerify)
 	s.mux.HandleFunc("GET /api/v1/records", s.handleListRecords)
+	s.mux.HandleFunc("GET /api/v1/networks", s.handleNetworks)
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, message string) {
@@ -375,4 +377,15 @@ func (s *Server) handleListRecords(w http.ResponseWriter, r *http.Request) {
 		Total:   total,
 		Records: records,
 	})
+}
+
+func (s *Server) handleNetworks(w http.ResponseWriter, _ *http.Request) {
+	networks := []string{}
+	if s.cfg.Router != nil {
+		networks = s.cfg.Router.SupportedNetworks()
+	} else if s.cfg.ChainAdapter != nil {
+		networks = append(networks, s.cfg.ChainAdapter.Name())
+	}
+	slices.Sort(networks)
+	writeJSON(w, http.StatusOK, map[string][]string{"networks": networks})
 }
