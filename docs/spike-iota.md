@@ -116,3 +116,23 @@ For the Oracle IOTA Adapter (Issue #11):
    - The Oracle periodically reconciles indexed object IDs with on-chain object existence (`rpc.getObject`) to detect if an object has been destroyed or pruned.
 4. **Gas Coin Concurrency Control**:
    - Because IOTA transactions lock owned gas coins during execution, the Oracle adapter must serialize transactions from a single signer or maintain a pool of separate gas coin objects to avoid parallel contention errors.
+
+## Oracle integration
+
+Run `npm ci` and `npm start` in `smart-contract/iota` with Node.js 26. Set
+`IOTA_PRIVATE_KEY` to a funded Ed25519 testnet or localnet account. Set
+`IOTA_SERVICE_TOKEN` to a random secret of at least 32 bytes. The service
+listens on `127.0.0.1:8091` by default. Configure the Go oracle on the same
+host with `IOTA_SERVICE_URL=http://127.0.0.1:8091`, the same
+`IOTA_SERVICE_TOKEN`, and a comma-separated `IOTA_TRUSTED_SIGNERS` list
+including the writing account. The IOTA network appears as `iota-testnet`
+or `iota-localnet` based on the service configuration.
+
+One oracle process serializes writes through the IOTA account. SQLite keeps
+the signed transaction and digest before broadcast. When the result is
+uncertain, the oracle retries the same transaction and checks its digest
+before resubmitting. Preserve the SQLite file and back it up. Startup and
+periodic reconciliation recover missing entries from notarizations owned by
+trusted signers. IOTA uses object IDs in verify requests and reports an
+unavailable object as `FILE_UNAVAILABLE`. The default delete-lock horizon is
+one year and can be set with `IOTA_DELETE_LOCK_SECONDS`.

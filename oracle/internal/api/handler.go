@@ -204,19 +204,6 @@ func (s *Server) handleCreateAttestation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// 5. Store SBOM and Scan in RustFS S3
-	storageKey := fmt.Sprintf("%s/%s/%s/%s", req.Network, req.App, req.Version, req.ScanID)
-	if s.cfg.S3Store != nil {
-		if err := s.cfg.S3Store.PutSBOM(ctx, storageKey+".json", req.SBOM); err != nil {
-			writeJSONError(w, http.StatusBadGateway, model.ErrCodeDependencyUnavailable, fmt.Sprintf("failed to store SBOM: %v", err))
-			return
-		}
-		if err := s.cfg.S3Store.PutScan(ctx, storageKey+".json", req.Scan); err != nil {
-			writeJSONError(w, http.StatusBadGateway, model.ErrCodeDependencyUnavailable, fmt.Sprintf("failed to store scan: %v", err))
-			return
-		}
-	}
-
 	// 6. Record attestation via Chain Adapter & index in SQLite
 	now := time.Now().UTC()
 	dbRecord := store.AttestationRecord{
@@ -232,8 +219,26 @@ func (s *Server) handleCreateAttestation(w http.ResponseWriter, r *http.Request)
 	}
 
 	if err := s.cfg.Index.Save(ctx, dbRecord); err != nil {
+		if errors.Is(err, store.ErrDuplicateScanID) {
+			writeJSONError(w, http.StatusConflict, model.ErrCodeDuplicateScanID, "scan ID already used on this network")
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, model.ErrCodeInternal, fmt.Sprintf("failed to record pending attestation: %v", err))
 		return
+	}
+
+	storageKey := fmt.Sprintf("%s/%s/%s/%s", req.Network, req.App, req.Version, req.ScanID)
+	if s.cfg.S3Store != nil {
+		if err := s.cfg.S3Store.PutSBOM(ctx, storageKey+".json", req.SBOM); err != nil {
+			_ = s.cfg.Index.UpdateStatus(ctx, req.Network, req.ScanID, "failed", "", "", nil)
+			writeJSONError(w, http.StatusBadGateway, model.ErrCodeDependencyUnavailable, fmt.Sprintf("failed to store SBOM: %v", err))
+			return
+		}
+		if err := s.cfg.S3Store.PutScan(ctx, storageKey+".json", req.Scan); err != nil {
+			_ = s.cfg.Index.UpdateStatus(ctx, req.Network, req.ScanID, "failed", "", "", nil)
+			writeJSONError(w, http.StatusBadGateway, model.ErrCodeDependencyUnavailable, fmt.Sprintf("failed to store scan: %v", err))
+			return
+		}
 	}
 
 	chainRec := chain.Record{
@@ -248,13 +253,35 @@ func (s *Server) handleCreateAttestation(w http.ResponseWriter, r *http.Request)
 
 	receipt, err := chainAdapter.WriteRecord(ctx, chainRec)
 	if err != nil {
+		if errors.Is(err, chain.ErrTransactionPending) {
+			status, readErr := s.cfg.Index.GetStatus(ctx, req.Network, req.ScanID)
+			if readErr == nil && status != nil {
+				writeJSON(w, http.StatusAccepted, status)
+			} else {
+				writeJSONError(w, http.StatusBadGateway, model.ErrCodeDependencyUnavailable, "transaction outcome is pending")
+			}
+			return
+		}
 		_ = s.cfg.Index.UpdateStatus(ctx, req.Network, req.ScanID, "failed", "", "", nil)
 		writeJSONError(w, http.StatusBadGateway, model.ErrCodeDependencyUnavailable, fmt.Sprintf("failed to write record to chain: %v", err))
 		return
 	}
 
+	if _, isIOTA := chainAdapter.(*chain.IOTAAdapter); isIOTA {
+		status, err := s.cfg.Index.GetStatus(ctx, req.Network, req.ScanID)
+		if err != nil || status == nil {
+			writeJSONError(w, http.StatusInternalServerError, model.ErrCodeInternal, "failed to read transaction receipt")
+			return
+		}
+		writeJSON(w, http.StatusCreated, status)
+		return
+	}
+
 	includedAt := receipt.IncludedAt
-	_ = s.cfg.Index.UpdateStatus(ctx, req.Network, req.ScanID, "included", receipt.TxRef, receipt.RecordID, &includedAt)
+	if err := s.cfg.Index.UpdateStatus(ctx, req.Network, req.ScanID, "included", receipt.TxRef, receipt.RecordID, &includedAt); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, model.ErrCodeInternal, "failed to save transaction receipt")
+		return
+	}
 
 	writeJSON(w, http.StatusCreated, model.AttestationStatus{
 		Network:     req.Network,

@@ -117,6 +117,20 @@ func main() {
 		}
 	}
 
+	var iotaAdapter *chain.IOTAAdapter
+	if endpoint := os.Getenv("IOTA_SERVICE_URL"); endpoint != "" {
+		iotaCtx, iotaCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		iotaAdapter, err = chain.NewIOTAAdapter(iotaCtx, endpoint, os.Getenv("IOTA_SERVICE_TOKEN"), strings.Split(os.Getenv("IOTA_TRUSTED_SIGNERS"), ","), idx)
+		if err == nil {
+			err = iotaAdapter.Reconcile(iotaCtx)
+		}
+		iotaCancel()
+		if err != nil {
+			log.Fatalf("failed to initialize IOTA adapter: %v", err)
+		}
+		router.Register(iotaAdapter)
+	}
+
 	var authorizePipeline func(context.Context, string, string) bool
 	if pipelineEnabled {
 		pipeline, err := verify.NewPipelineVerifier(context.Background(), audience, allowlist)
@@ -140,6 +154,24 @@ func main() {
 	// Start background on-chain verification listeners for Ethereum networks
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
+	if iotaAdapter != nil {
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-workerCtx.Done():
+					return
+				case <-ticker.C:
+					ctx, cancel := context.WithTimeout(workerCtx, time.Minute)
+					if err := iotaAdapter.Reconcile(ctx); err != nil {
+						log.Printf("reconcile IOTA index: %v", err)
+					}
+					cancel()
+				}
+			}
+		}()
+	}
 
 	verifyEngine := verify.NewEngine(verify.EngineConfig{
 		BlobStore:       s3Store,
@@ -168,7 +200,7 @@ func main() {
 		Addr:         ":" + port,
 		Handler:      server,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
+		WriteTimeout: 90 * time.Second,
 	}
 
 	stopChan := make(chan os.Signal, 1)
