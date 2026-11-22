@@ -149,7 +149,12 @@ func (a *IOTAAdapter) WriteRecord(ctx context.Context, record Record) (*Receipt,
 			ScanHash:     "0x" + hex.EncodeToString(record.ScanHash[:]),
 		}
 		var prepared store.IOTATransaction
-		if err := a.call(ctx, http.MethodPost, "/prepare", payload, &prepared); err != nil {
+		err := a.call(ctx, http.MethodPost, "/prepare", payload, &prepared)
+		var serviceError *iotaServiceError
+		if errors.As(err, &serviceError) && serviceError.Status == http.StatusServiceUnavailable && ctx.Err() == nil {
+			err = a.call(ctx, http.MethodPost, "/prepare", payload, &prepared)
+		}
+		if err != nil {
 			return nil, fmt.Errorf("prepare IOTA write: %w", err)
 		}
 		if prepared.Digest == "" || prepared.Bytes == "" || prepared.Signature == "" {

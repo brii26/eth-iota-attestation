@@ -1,11 +1,12 @@
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { IotaClient, getFullnodeUrl, JsonRpcError } from "@iota/iota-sdk/client";
 import type { IotaTransactionBlockResponse } from "@iota/iota-sdk/client";
 import { Ed25519Keypair } from "@iota/iota-sdk/keypairs/ed25519";
-import { TransactionDataBuilder } from "@iota/iota-sdk/transactions";
-import { iota_client_helpers } from "@iota/iota-interaction-ts/node/index.js";
+import { bcs } from "@iota/iota-sdk/bcs";
+import { Transaction, TransactionDataBuilder } from "@iota/iota-sdk/transactions";
 import { CreateNotarizationLocked, NotarizationBuilderLocked, NotarizationClientReadOnly, TimeLock } from "@iota/notarization/node/index.js";
 
 const marker = "artifact-attestation-v1";
@@ -102,7 +103,17 @@ function hashes(value: unknown): Hashes {
   return { artifactHash, sbomHash, scanHash };
 }
 
+let lastSubmission: string | undefined;
+
 async function prepare(record: RecordPayload | Hashes, stateMarker = marker) {
+  const pending = lastSubmission;
+  if (pending) {
+    const deadline = Date.now() + 12_000;
+    while (!(await fetchTransaction(pending))?.checkpoint) {
+      if (Date.now() >= deadline) throw new RequestError(503, "previous IOTA write is awaiting a checkpoint");
+      await sleep(500);
+    }
+  }
   const sequence = await rpc.getLatestCheckpointSequenceNumber();
   const checkpoint = await rpc.getCheckpoint({ id: sequence });
   const deleteUnlockAt = Math.floor(Number(checkpoint.timestampMs) / 1000) + lockSeconds;
@@ -113,9 +124,12 @@ async function prepare(record: RecordPayload | Hashes, stateMarker = marker) {
   const transaction = new CreateNotarizationLocked(builder);
   type BuildClient = Parameters<typeof transaction.buildProgrammableTransaction>[0];
   const unsigned = await transaction.buildProgrammableTransaction(readOnly as unknown as BuildClient);
-  const bytes = await iota_client_helpers.addGasDataToTransaction(
-    rpc as unknown as Parameters<typeof iota_client_helpers.addGasDataToTransaction>[0], address, unsigned,
-  );
+  const kind = bcs.TransactionKind.serialize({
+    ProgrammableTransaction: bcs.ProgrammableTransaction.parse(unsigned),
+  }).toBytes();
+  const block = Transaction.fromKind(kind);
+  block.setSender(address);
+  const bytes = await block.build({ client: rpc });
   const signed = await signer.signTransaction(bytes);
   return { digest: TransactionDataBuilder.getDigestFromBytes(bytes), bytes: signed.bytes, signature: signed.signature };
 }
@@ -164,10 +178,13 @@ async function submit(value: unknown) {
   }
   const known = await fetchTransaction(request.digest);
   const tx = known ?? await rpc.executeTransactionBlock({ transactionBlock: bytes, signature: request.signature, options });
+  if (!known) lastSubmission = tx.digest;
   const result = await receipt(tx);
-  if (result.includedAt) return { ...result, txSize: bytes.length };
-  const confirmed = await rpc.waitForTransaction({ digest: tx.digest, options, timeout: 12_000 });
-  return { ...await receipt(confirmed), txSize: bytes.length };
+  return {
+    ...result,
+    includedAt: result.includedAt ?? new Date().toISOString(),
+    txSize: bytes.length,
+  };
 }
 
 async function read(id: string, stateMarker = marker) {
