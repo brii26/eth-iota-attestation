@@ -56,10 +56,11 @@ func setupTestServer(t *testing.T, artifactContent []byte) (*Server, *store.SQLi
 	router.Register(mockChain)
 
 	srv := NewServer(Config{
-		Index:           idx,
-		Router:          router,
-		VerdaccioClient: vClient,
-		MaxGrypeDBAge:   24 * time.Hour,
+		AuthorizePipeline: func(_ context.Context, token, _ string) bool { return token == "mock-ci-token" },
+		Index:             idx,
+		Router:            router,
+		VerdaccioClient:   vClient,
+		MaxGrypeDBAge:     24 * time.Hour,
 	})
 
 	return srv, idx, mockChain, verdaccioSrv

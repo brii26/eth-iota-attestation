@@ -1,0 +1,9 @@
+{
+  "name": "@attestation/demo",
+  "version": "1.0.0",
+  "description": "Example artifact for the attestation pipeline",
+  "type": "module",
+  "exports": "./index.js",
+  "files": ["index.js"],
+  "license": "MIT"
+}
