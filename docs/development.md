@@ -14,6 +14,23 @@ module at the repository root (`go.mod`). Hardhat compiles the contract, and the
 frontend and the IOTA spike are TypeScript packages with their own
 `package.json`. Run the commands below from the repository root.
 
+## Compose development stack
+
+Run `docker compose up -d --build --wait` from the repository root to start all
+five services. The `deploy` service creates private-chain accounts, deploys
+the registry and records a smoke attestation. Later starts reuse the
+configured registry after verifying the saved record. The frontend loads
+the public contract address from the deployment file.
+
+The dashboard is at `http://127.0.0.1:5173` and the oracle is at
+`http://127.0.0.1:8080`. Set host port overrides in `.env` if another service
+uses those ports. To run only infrastructure for local Go and Vite work, use
+`docker compose up -d --wait geth verdaccio rustfs`.
+
+Pipeline submissions require the OIDC configuration in the [oracle
+guide](../oracle/README.md). Run the IOTA notarization service and Go oracle
+on the host using the [IOTA guide](spike-iota.md) when developing IOTA flows.
+
 ## Contract tooling
 
 Use Go 1.26 or newer for tests and commands:

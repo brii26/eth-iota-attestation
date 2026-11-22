@@ -4,7 +4,7 @@ An application for recording and verifying software artifact attestations, with
 a comparative study of Ethereum and IOTA Rebased. Developed as a final project
 for IF4035 Blockchain at Institut Teknologi Bandung.
 
-The project is under development. The architecture below describes the planned system.
+The application records and verifies software releases on private Ethereum, Sepolia, and IOTA Rebased.
 
 ## Overview
 
@@ -71,9 +71,8 @@ The performance comparison uses Sepolia and the IOTA testnet with the same
 dataset and client environment. Private-chain results are reported separately.
 
 Ethereum uses an append-only registry with an oracle allowlist and duplicate
-scan ID rejection. IOTA uses notarization objects, with history lookup and scan
-ID uniqueness managed by the oracle and index. The IOTA notarization lifecycle
-and lock guarantees remain subject to validation.
+scan ID rejection. IOTA uses locked notarization objects. The oracle and SQLite index handle history
+lookup and scan ID uniqueness. The IOTA service configures the delete-lock horizon.
 
 ## Research questions
 
@@ -87,30 +86,39 @@ and lock guarantees remain subject to validation.
 | Frontend | React, Vite, TypeScript, Tailwind CSS, shadcn/ui |
 | Backend API and oracle | Go, standard library `net/http` |
 | Ethereum | Solidity, Hardhat 3 (compiler), go-ethereum bindings, MetaMask |
-| IOTA Rebased | IOTA Notarization (TypeScript spike, adapter planned) |
+| IOTA Rebased | IOTA Notarization (TypeScript service) |
 | Storage | Verdaccio, RustFS, SQLite |
 | CI and scanning | GitHub Actions, Syft, Grype |
 | Benchmark and infrastructure | Go `testing`, Docker Compose |
 
-The backend, oracle, contract tests, deployment commands, and benchmarks are
-written in Go. Hardhat only compiles the contract. The IOTA notarization library
-exists for Rust and WebAssembly with TypeScript bindings but not for Go, so the
-IOTA adapter is planned as a small TypeScript service that the Go oracle calls.
-The IOTA spike stays in TypeScript for the same reason.
+The backend, oracle, contract tests, deployment commands, and benchmarks use
+Go. Hardhat compiles the contracts. The Go IOTA adapter calls a local
+TypeScript service that uses the IOTA Notarization SDK.
 
 ## Getting started
 
-Requirements: Go 1.26 or newer, Docker with Compose, and Node.js 26 LTS (only
-to compile the contract and regenerate bindings).
+Install Docker Engine with Compose and start the development stack from the
+repository root.
 
 ```sh
-cd smart-contract
-go test ./registry          # contract tests on a simulated chain
+docker compose up -d --build --wait
+curl -fsS http://127.0.0.1:8080/api/v1/networks
 ```
 
-Start the private Geth chain and deploy the contract by following
-[the private Geth guide](docs/private-geth.md). Other development instructions
-are in [the project documentation](docs/development.md).
+Open the dashboard at `http://127.0.0.1:5173`. Compose starts private Geth,
+Verdaccio, RustFS, the Go oracle, and the frontend. The deployment step
+creates private-chain-only keys and writes a smoke attestation. Named volumes
+preserve the chain, deployment, and oracle index across restarts.
+
+To change local ports or configure pipeline authorization, copy
+`.env.example` to `.env`. Configure the GitHub runner, tailnet access, and
+allowed OIDC workflow before submitting real release attestations. The
+default setup supports reads and wallet verification of the smoke record.
+
+- [Oracle setup and CI authorization](oracle/README.md)
+- [Private Geth deployment and MetaMask](docs/private-geth.md)
+- [IOTA setup and notarization behavior](docs/spike-iota.md)
+- [Manual development and contract tests](docs/development.md)
 
 ## License
 

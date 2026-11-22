@@ -8,8 +8,8 @@ services:
       - --http.addr=0.0.0.0
       - --http.port=8545
       - --http.api=eth,net,web3
-      - --http.vhosts=localhost,127.0.0.1
-      - --http.corsdomain=http://localhost:5173,http://127.0.0.1:5173
+      - --http.vhosts=localhost,127.0.0.1,geth
+      - --http.corsdomain=http://localhost:${FRONTEND_PORT:-5173},http://127.0.0.1:${FRONTEND_PORT:-5173}
     ports:
       - "127.0.0.1:8545:8545"
     volumes:
@@ -23,7 +23,7 @@ services:
     stop_grace_period: 30s
 
   verdaccio:
-    image: verdaccio/verdaccio:6
+    image: verdaccio/verdaccio:6@sha256:8c9cd40d28ef134140f4f6c4cef2032ac58bd554cce56757048f81b72717c09c
     ports:
       - "127.0.0.1:4873:4873"
     volumes:
@@ -38,8 +38,8 @@ services:
   rustfs:
     image: rustfs/rustfs:1.0.4
     ports:
-      - "127.0.0.1:9000:9000" # S3 API
-      - "127.0.0.1:9002:9001" # Web Console
+      - "127.0.0.1:${RUSTFS_HOST_PORT:-9000}:9000" # S3 API
+      - "127.0.0.1:${RUSTFS_CONSOLE_PORT:-9002}:9001" # Web Console
     environment:
       - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY:-rustfsadmin}
       - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY:-rustfsdevpassword123}
@@ -54,7 +54,71 @@ services:
       retries: 12
       start_period: 5s
 
+  deploy:
+    image: eth-iota-attestation-oracle:development
+    build: &oracle-build
+      context: .
+      dockerfile: docker/oracle/Dockerfile
+    command: ["deploy"]
+    depends_on:
+      geth:
+        condition: service_healthy
+    environment:
+      ETHEREUM_RPC_URL: http://geth:8545
+    volumes:
+      - deployment:/deployment
+      - admin-key:/admin-key
+      - oracle-key:/oracle-key
+
+  oracle:
+    image: eth-iota-attestation-oracle:development
+    build: *oracle-build
+    command: ["oracle"]
+    depends_on:
+      deploy:
+        condition: service_completed_successfully
+      rustfs:
+        condition: service_healthy
+      verdaccio:
+        condition: service_healthy
+    environment:
+      ETHEREUM_PRIVATE_RPC_URL: http://geth:8545
+      RUSTFS_ENDPOINT: http://rustfs:9000
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsdevpassword123}
+      VERDACCIO_URL: http://verdaccio:4873
+      SQLITE_PATH: /data/attestations.sqlite
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
+      OIDC_APP_ALLOWLIST: ${OIDC_APP_ALLOWLIST:-}
+    ports:
+      - "127.0.0.1:${ORACLE_HOST_PORT:-8080}:8080"
+    volumes:
+      - deployment:/deployment:ro
+      - oracle-key:/oracle-key:ro
+      - oracle-index:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/api/v1/networks"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+    depends_on:
+      oracle:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:8080"
+    volumes:
+      - deployment:/deployment:ro
+
 volumes:
+  deployment:
+  admin-key:
+  oracle-key:
+  oracle-index:
   geth-data:
   verdaccio-storage:
   rustfs-data:
