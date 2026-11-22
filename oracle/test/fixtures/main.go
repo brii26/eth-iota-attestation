@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/brii26/eth-iota-attestation/oracle/internal/benchmark"
@@ -39,18 +40,22 @@ func main() {
 	output := flag.String("output", "", "directory in which to create a new dataset run")
 	registry := flag.String("registry", "", "optional Verdaccio URL for publication")
 	userConfig := flag.String("npm-userconfig", "", "optional npm config file for registry authentication")
+	workers := flag.Int("scan-workers", 1, "maximum simultaneous Grype scans")
 	flag.Parse()
 	if *output == "" {
 		log.Fatal("-output is required")
 	}
+	if *workers < 1 || *workers > 10 {
+		log.Fatal("-scan-workers must be between 1 and 10")
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
-	if err := run(ctx, *output, *registry, *userConfig); err != nil {
+	if err := run(ctx, *output, *registry, *userConfig, *workers); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(ctx context.Context, output, registry, userConfig string) error {
+func run(ctx context.Context, output, registry, userConfig string, workers int) error {
 	if registry != "" {
 		endpoint, err := url.Parse(registry)
 		if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") ||
@@ -96,6 +101,9 @@ func run(ctx context.Context, output, registry, userConfig string) error {
 			return fmt.Errorf("generate %s: %w", name, err)
 		}
 		dataset.Fixtures = append(dataset.Fixtures, fixture)
+	}
+	if err := scanFixtures(ctx, directory, dataset.Fixtures, workers); err != nil {
+		return err
 	}
 	if registry != "" {
 		for _, fixture := range dataset.Fixtures {
@@ -165,18 +173,11 @@ func generate(ctx context.Context, output, name, version, class string, count in
 		"--source-name", app, "--source-version", version, "-o", "cyclonedx-json="+sbom); err != nil {
 		return benchmark.Fixture{}, err
 	}
-	report, err := command(ctx, output, "grype", "sbom:"+sbom, "-o", "json")
-	if err != nil {
-		return benchmark.Fixture{}, err
-	}
-	if err := os.WriteFile(filepath.Join(output, scan), report, 0o644); err != nil {
-		return benchmark.Fixture{}, err
-	}
-	fixture := benchmark.Fixture{App: app, Version: version, SizeClass: class, Dependencies: count}
+	fixture := benchmark.Fixture{App: app, Version: version, SizeClass: class, Dependencies: count, Scan: benchmark.File{Path: scan}}
 	for _, item := range []struct {
 		path string
 		out  *benchmark.File
-	}{{archive, &fixture.Artifact}, {sbom, &fixture.SBOM}, {scan, &fixture.Scan}} {
+	}{{archive, &fixture.Artifact}, {sbom, &fixture.SBOM}} {
 		file, err := inspectFile(output, item.path)
 		if err != nil {
 			return benchmark.Fixture{}, err
@@ -184,6 +185,56 @@ func generate(ctx context.Context, output, name, version, class string, count in
 		*item.out = file
 	}
 	return fixture, nil
+}
+
+func scanFixtures(ctx context.Context, directory string, fixtures []benchmark.Fixture, workers int) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan int, len(fixtures))
+	for index := range fixtures {
+		jobs <- index
+	}
+	close(jobs)
+	var work sync.WaitGroup
+	var first sync.Once
+	var failure error
+	for range workers {
+		work.Add(1)
+		go func() {
+			defer work.Done()
+			for index := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				fixture := &fixtures[index]
+				scan, err := scanFixture(ctx, directory, *fixture)
+				if err != nil {
+					first.Do(func() {
+						failure = fmt.Errorf("scan %s: %w", fixture.App, err)
+						cancel()
+					})
+					return
+				}
+				fixture.Scan = scan
+			}
+		}()
+	}
+	work.Wait()
+	return errors.Join(failure, ctx.Err())
+}
+
+func scanFixture(ctx context.Context, directory string, fixture benchmark.Fixture) (benchmark.File, error) {
+	report, err := command(ctx, directory, "grype", "sbom:"+fixture.SBOM.Path, "-o", "json")
+	if err != nil {
+		return benchmark.File{}, err
+	}
+	if !json.Valid(report) {
+		return benchmark.File{}, errors.New("Grype did not produce valid JSON")
+	}
+	if err := os.WriteFile(filepath.Join(directory, fixture.Scan.Path), report, 0o644); err != nil {
+		return benchmark.File{}, err
+	}
+	return inspectFile(directory, fixture.Scan.Path)
 }
 
 func inspectFile(directory, name string) (benchmark.File, error) {

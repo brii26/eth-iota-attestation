@@ -16,3 +16,5 @@ To publish the dataset, add `-registry http://127.0.0.1:4873` and
 `-npm-userconfig /path/to/authorized.npmrc`. Give the same generated
 `manifest.json` to both benchmark runners. File paths in the manifest
 are relative to its directory.
+
+Use `-scan-workers 4` to overlap Grype scans on a machine with enough memory.
