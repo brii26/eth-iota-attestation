@@ -25,7 +25,7 @@ services:
   verdaccio:
     image: verdaccio/verdaccio:6@sha256:8c9cd40d28ef134140f4f6c4cef2032ac58bd554cce56757048f81b72717c09c
     ports:
-      - "127.0.0.1:4873:4873"
+      - "${PIPELINE_BIND_ADDRESS:-127.0.0.1}:${VERDACCIO_HOST_PORT:-4873}:4873"
     volumes:
       - ./docker/verdaccio/config.yaml:/verdaccio/conf/config.yaml:ro
       - verdaccio-storage:/verdaccio/storage
@@ -91,7 +91,7 @@ services:
       OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
       OIDC_APP_ALLOWLIST: ${OIDC_APP_ALLOWLIST:-}
     ports:
-      - "127.0.0.1:${ORACLE_HOST_PORT:-8080}:8080"
+      - "${PIPELINE_BIND_ADDRESS:-127.0.0.1}:${ORACLE_HOST_PORT:-8080}:8080"
     volumes:
       - deployment:/deployment:ro
       - oracle-key:/oracle-key:ro
