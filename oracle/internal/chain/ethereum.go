@@ -16,6 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
+	"github.com/brii26/eth-iota-attestation/oracle/internal/store"
 	"github.com/brii26/eth-iota-attestation/smart-contract/registry"
 )
 
@@ -26,6 +27,7 @@ type EthereumConfig struct {
 	ContractAddress string
 	PrivateKeyHex   string
 	TxTimeout       time.Duration
+	Index           *store.SQLiteIndex
 }
 
 // EthereumAdapter implements the Adapter interface for EVM networks (private Geth, Sepolia).
@@ -41,6 +43,7 @@ type EthereumAdapter struct {
 	caller       *registry.AttestationRegistryCaller
 	filterer     *registry.AttestationRegistryFilterer
 	txTimeout    time.Duration
+	index        *store.SQLiteIndex
 }
 
 // NewEthereumAdapter initializes Ethereum RPC connections, contract bindings, and the nonce coordinator.
@@ -68,7 +71,14 @@ func NewEthereumAdapter(ctx context.Context, cfg EthereumConfig) (*EthereumAdapt
 	}
 	oracleAddr := crypto.PubkeyToAddress(key.PublicKey)
 
-	multiRPC, err := NewMultiRPCClient(ctx, cfg.Endpoints)
+	var expected *big.Int
+	switch cfg.Name {
+	case "ethereum-private":
+		expected = big.NewInt(1337)
+	case "ethereum-sepolia":
+		expected = big.NewInt(11155111)
+	}
+	multiRPC, err := NewMultiRPCClient(ctx, cfg.Endpoints, expected)
 	if err != nil {
 		return nil, fmt.Errorf("init multi-rpc client: %w", err)
 	}
@@ -98,6 +108,15 @@ func NewEthereumAdapter(ctx context.Context, cfg EthereumConfig) (*EthereumAdapt
 		return nil, fmt.Errorf("bind filterer: %w", err)
 	}
 
+	nonceTracker := NewNonceManager(oracleAddr)
+	if cfg.Index != nil {
+		floor, err := cfg.Index.EthereumNonceFloor(ctx, cfg.Name, oracleAddr.Hex())
+		if err != nil {
+			multiRPC.Close()
+			return nil, fmt.Errorf("recover Ethereum nonce: %w", err)
+		}
+		nonceTracker.SetFloor(floor)
+	}
 	return &EthereumAdapter{
 		name:         cfg.Name,
 		multiRPC:     multiRPC,
@@ -105,7 +124,8 @@ func NewEthereumAdapter(ctx context.Context, cfg EthereumConfig) (*EthereumAdapt
 		privKey:      key,
 		oracleAddr:   oracleAddr,
 		chainID:      chainID,
-		nonceMgr:     NewNonceManager(oracleAddr),
+		nonceMgr:     nonceTracker,
+		index:        cfg.Index,
 		transactor:   transactor,
 		caller:       caller,
 		filterer:     filterer,
@@ -130,6 +150,9 @@ func (a *EthereumAdapter) Filterer() *registry.AttestationRegistryFilterer {
 
 // WriteRecord writes a new attestation on-chain by calling addRecord on AttestationRegistry.
 func (a *EthereumAdapter) WriteRecord(ctx context.Context, rec Record) (*Receipt, error) {
+	if a.index != nil {
+		return a.writeDurableRecord(ctx, rec)
+	}
 	client := a.multiRPC.CurrentClient()
 
 	nonce, releaseNonce, err := a.nonceMgr.Acquire(ctx, client)

@@ -80,6 +80,7 @@ func main() {
 			Endpoints:       []string{privRPC},
 			ContractAddress: privContract,
 			PrivateKeyHex:   oracleKey,
+			Index:           idx,
 		})
 		if err != nil {
 			log.Printf("warning: failed to init ethereum-private adapter: %v", err)
@@ -108,12 +109,13 @@ func main() {
 			Endpoints:       endpoints,
 			ContractAddress: sepoliaContract,
 			PrivateKeyHex:   oracleKey,
+			Index:           idx,
 		})
 		if err != nil {
 			log.Printf("warning: failed to init ethereum-sepolia adapter: %v", err)
 		} else {
 			router.Register(sepoliaAdapter)
-			log.Printf("Registered chain adapter: ethereum-sepolia (endpoints: %s)", strings.Join(endpoints, ", "))
+			log.Print("Registered chain adapter: ethereum-sepolia")
 		}
 	}
 
@@ -155,22 +157,7 @@ func main() {
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
 	if iotaAdapter != nil {
-		go func() {
-			ticker := time.NewTicker(time.Minute)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-workerCtx.Done():
-					return
-				case <-ticker.C:
-					ctx, cancel := context.WithTimeout(workerCtx, time.Minute)
-					if err := iotaAdapter.Reconcile(ctx); err != nil {
-						log.Printf("reconcile IOTA index: %v", err)
-					}
-					cancel()
-				}
-			}
-		}()
+		go reconcile(workerCtx, iotaAdapter.Name(), iotaAdapter.Reconcile)
 	}
 
 	verifyEngine := verify.NewEngine(verify.EngineConfig{
@@ -183,6 +170,9 @@ func main() {
 		if strings.HasPrefix(netName, "ethereum-") {
 			ad, err := router.Get(netName)
 			if err == nil {
+				if ethereum, ok := ad.(*chain.EthereumAdapter); ok {
+					go reconcile(workerCtx, netName, ethereum.Reconcile)
+				}
 				w := listener.NewWorker(listener.Config{
 					Adapter:      ad,
 					Engine:       verifyEngine,
@@ -224,4 +214,22 @@ func main() {
 		log.Printf("server shutdown error: %v", err)
 	}
 	log.Println("Oracle service stopped cleanly")
+}
+
+func reconcile(workerCtx context.Context, network string, recover func(context.Context) error) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		ctx, cancel := context.WithTimeout(workerCtx, time.Minute)
+		err := recover(ctx)
+		cancel()
+		if err != nil && workerCtx.Err() == nil {
+			log.Printf("reconcile %s: %v", network, err)
+		}
+		select {
+		case <-workerCtx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }

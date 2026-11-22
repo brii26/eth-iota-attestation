@@ -262,19 +262,24 @@ func (s *Server) handleCreateAttestation(w http.ResponseWriter, r *http.Request)
 			}
 			return
 		}
-		_ = s.cfg.Index.UpdateStatus(ctx, req.Network, req.ScanID, "failed", "", "", nil)
+		if !errors.Is(err, chain.ErrTransactionReverted) {
+			_ = s.cfg.Index.UpdateStatus(ctx, req.Network, req.ScanID, "failed", "", "", nil)
+		}
 		writeJSONError(w, http.StatusBadGateway, model.ErrCodeDependencyUnavailable, fmt.Sprintf("failed to write record to chain: %v", err))
 		return
 	}
 
-	if _, isIOTA := chainAdapter.(*chain.IOTAAdapter); isIOTA {
+	switch chainAdapter.(type) {
+	case *chain.IOTAAdapter, *chain.EthereumAdapter:
 		status, err := s.cfg.Index.GetStatus(ctx, req.Network, req.ScanID)
 		if err != nil || status == nil {
 			writeJSONError(w, http.StatusInternalServerError, model.ErrCodeInternal, "failed to read transaction receipt")
 			return
 		}
-		writeJSON(w, http.StatusCreated, status)
-		return
+		if status.Status == "included" {
+			writeJSON(w, http.StatusCreated, status)
+			return
+		}
 	}
 
 	includedAt := receipt.IncludedAt

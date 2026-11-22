@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 	"sync"
 	"time"
 
@@ -16,13 +17,14 @@ type MultiRPCClient struct {
 	mu         sync.RWMutex
 	endpoints  []string
 	activeIdx  int
-	rpcClient  *rpc.Client
+	clients    []*ethclient.Client
+	chainID    *big.Int
 	ethClient  *ethclient.Client
 	maxRetries int
 }
 
 // NewMultiRPCClient creates an RPC client pool that tries endpoints in order.
-func NewMultiRPCClient(ctx context.Context, endpoints []string) (*MultiRPCClient, error) {
+func NewMultiRPCClient(ctx context.Context, endpoints []string, expectedChain ...*big.Int) (*MultiRPCClient, error) {
 	if len(endpoints) == 0 {
 		return nil, errors.New("at least one RPC endpoint is required")
 	}
@@ -30,30 +32,49 @@ func NewMultiRPCClient(ctx context.Context, endpoints []string) (*MultiRPCClient
 	m := &MultiRPCClient{
 		endpoints:  endpoints,
 		maxRetries: len(endpoints) * 2,
+		clients:    make([]*ethclient.Client, len(endpoints)),
 	}
 
-	if err := m.connect(ctx, 0); err != nil {
-		return nil, err
+	if len(expectedChain) > 0 {
+		m.chainID = expectedChain[0]
 	}
-	return m, nil
+	var failures error
+	for idx := range endpoints {
+		if err := m.connect(ctx, idx); err == nil {
+			return m, nil
+		} else {
+			failures = errors.Join(failures, err)
+		}
+	}
+	return nil, failures
 }
 
 func (m *MultiRPCClient) connect(ctx context.Context, idx int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.rpcClient != nil {
-		m.rpcClient.Close()
+	client := m.clients[idx]
+	if client == nil {
+		raw, err := rpc.DialContext(ctx, m.endpoints[idx])
+		if err != nil {
+			return fmt.Errorf("connect Ethereum RPC %d: %w", idx+1, err)
+		}
+		client = ethclient.NewClient(raw)
+		if m.chainID != nil {
+			probe, cancel := context.WithTimeout(ctx, 4*time.Second)
+			id, err := client.ChainID(probe)
+			cancel()
+			if err != nil || id.Cmp(m.chainID) != 0 {
+				client.Close()
+				if err != nil {
+					return fmt.Errorf("validate Ethereum RPC %d: %w", idx+1, err)
+				}
+				return fmt.Errorf("Ethereum RPC %d uses chain %s, expected %s", idx+1, id, m.chainID)
+			}
+		}
+		m.clients[idx] = client
 	}
-
-	endpoint := m.endpoints[idx]
-	raw, err := rpc.DialContext(ctx, endpoint)
-	if err != nil {
-		return fmt.Errorf("dial rpc %s: %w", endpoint, err)
-	}
-
-	m.rpcClient = raw
-	m.ethClient = ethclient.NewClient(raw)
+	m.ethClient = client
 	m.activeIdx = idx
 	return nil
 }
@@ -74,11 +95,18 @@ func (m *MultiRPCClient) CurrentEndpoint() string {
 
 // Failover switches to the next available RPC endpoint.
 func (m *MultiRPCClient) Failover(ctx context.Context) error {
-	m.mu.Lock()
-	nextIdx := (m.activeIdx + 1) % len(m.endpoints)
-	m.mu.Unlock()
-
-	return m.connect(ctx, nextIdx)
+	m.mu.RLock()
+	active := m.activeIdx
+	m.mu.RUnlock()
+	failures := errors.New("no Ethereum RPC fallback is available")
+	for offset := 1; offset < len(m.endpoints); offset++ {
+		if err := m.connect(ctx, (active+offset)%len(m.endpoints)); err == nil {
+			return nil
+		} else {
+			failures = errors.Join(failures, err)
+		}
+	}
+	return failures
 }
 
 // ExecuteWithRetry runs an action using the active client. If it fails with a network/RPC error,
@@ -119,7 +147,9 @@ func (m *MultiRPCClient) ExecuteWithRetry(ctx context.Context, action func(clien
 func (m *MultiRPCClient) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.rpcClient != nil {
-		m.rpcClient.Close()
+	for _, client := range m.clients {
+		if client != nil {
+			client.Close()
+		}
 	}
 }
