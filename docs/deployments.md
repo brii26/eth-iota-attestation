@@ -33,3 +33,18 @@ gas used so the team can refine the estimate before running the benchmark.
 Use a funded oracle account with the settings in the [IOTA guide](spike-iota.md).
 Budget for both computation and storage. Record the notarization package ID,
 checkpoint, and delete-lock configuration with the benchmark results.
+
+
+## Pipeline access over Tailscale
+
+Install Tailscale on the target host and add that machine to the tailnet.
+Set `PIPELINE_BIND_ADDRESS` in the repository root environment file to its
+Tailscale IP. Compose publishes the Verdaccio and oracle ports on that
+address. Use the same address in the GitHub repository's `VERDACCIO_URL`
+and `ORACLE_URL` variables. If the verifier runs on the target host, the
+frontend still uses the private Docker network for API calls.
+
+Tag the runner with `tag:ci` and scope its tailnet access to that host's
+Verdaccio and oracle TCP ports, 4873 and 8080 by default. Configure the
+GitHub OIDC settings using the [oracle guide](../oracle/README.md). Run
+the workflow and confirm it reaches both services and writes a record.

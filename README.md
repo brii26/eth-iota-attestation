@@ -115,7 +115,10 @@ To change local ports or configure pipeline authorization, copy
 allowed OIDC workflow before submitting real release attestations. The
 default setup supports reads and wallet verification of the smoke record.
 
+- [User guide by role](docs/user-guide.md)
+- [Network deployments and runner access](docs/deployments.md)
 - [Oracle setup and CI authorization](oracle/README.md)
+- [RQ2 benchmark runner](docs/benchmark-rq2.md)
 - [Private Geth deployment and MetaMask](docs/private-geth.md)
 - [IOTA setup and notarization behavior](docs/spike-iota.md)
 - [Manual development and contract tests](docs/development.md)
