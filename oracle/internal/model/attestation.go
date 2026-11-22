@@ -25,13 +25,14 @@ type AttestationRequest struct {
 
 // AttestationStatus represents the response for GET /api/v1/attestations/{network}/{scanId}.
 type AttestationStatus struct {
-	Network     string     `json:"network"`
-	ScanID      string     `json:"scanId"`
-	Status      string     `json:"status"` // e.g. "pending", "included", "failed"
-	TxRef       string     `json:"txRef,omitempty"`
-	RecordID    string     `json:"recordId,omitempty"`
-	SubmittedAt time.Time  `json:"submittedAt"`
-	IncludedAt  *time.Time `json:"includedAt,omitempty"`
+	Network     string       `json:"network"`
+	ScanID      string       `json:"scanId"`
+	Status      string       `json:"status"` // e.g. "pending", "included", "failed"
+	TxRef       string       `json:"txRef,omitempty"`
+	RecordID    string       `json:"recordId,omitempty"`
+	SubmittedAt time.Time    `json:"submittedAt"`
+	IncludedAt  *time.Time   `json:"includedAt,omitempty"`
+	IOTA        *IOTAMetrics `json:"iota,omitempty"`
 }
 
 // ErrorDetail contains the structured code and message.
@@ -55,3 +56,13 @@ const (
 	ErrCodeInternal              = "ERR_INTERNAL"
 	ErrCodeNotFound              = "ERR_NOT_FOUND"
 )
+
+type IOTAMetrics struct {
+	FinalizedAt     *time.Time `json:"finalizedAt,omitempty"`
+	DeleteUnlockAt  *time.Time `json:"deleteUnlockAt,omitempty"`
+	Checkpoint      string     `json:"checkpoint,omitempty"`
+	Computation     string     `json:"computationCost"`
+	Storage         string     `json:"storageCost"`
+	Rebate          string     `json:"storageRebate"`
+	TransactionSize uint64     `json:"transactionSize"`
+}

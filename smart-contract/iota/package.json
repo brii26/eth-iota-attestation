@@ -6,11 +6,16 @@
   "scripts": {
     "spike": "node --env-file-if-exists=.env --experimental-strip-types notarization-spike.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types notarization-spike.ts --check"
+    "test": "node --experimental-strip-types notarization-spike.ts --check",
+    "start": "node --env-file-if-exists=.env attestation-service.ts"
   },
   "dependencies": {
     "@iota/iota-interaction-ts": "0.14.0",
     "@iota/iota-sdk": "1.17.0",
     "@iota/notarization": "0.1.15"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.0",
+    "typescript": "5.9.3"
   }
 }

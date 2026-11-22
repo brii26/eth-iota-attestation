@@ -68,11 +68,11 @@ async function main() {
     throw new Error("IOTA_LOCK_SECONDS must be an integer from 30 to 600");
   }
   const [notarization, sdk, accounts, faucet, interaction] = await Promise.all([
-    import("@iota/notarization/node"),
+    import("@iota/notarization/node/index.js"),
     import("@iota/iota-sdk/client"),
     import("@iota/iota-sdk/keypairs/ed25519"),
     import("@iota/iota-sdk/faucet"),
-    import("@iota/iota-interaction-ts/node"),
+    import("@iota/iota-interaction-ts/node/index.js"),
   ]);
   const { NotarizationClient, NotarizationClientReadOnly, TimeLock, State } = notarization;
   const rpcUrl = process.env.IOTA_RPC_URL ?? sdk.getFullnodeUrl(network);

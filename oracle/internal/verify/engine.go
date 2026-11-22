@@ -55,7 +55,9 @@ func NewEngine(cfg EngineConfig) *Engine {
 func (e *Engine) Verify(ctx context.Context, adapter chain.Adapter, req model.VerifyRequest) (*model.VerifyResponse, error) {
 	// 1. Resolve on-chain record
 	var q chain.Query
-	if req.RecordID != "" {
+	if strings.HasPrefix(adapter.Name(), "iota-") {
+		q.ExternalRecordID = req.RecordID
+	} else if req.RecordID != "" {
 		var id *big.Int
 		var ok bool
 		if strings.HasPrefix(req.RecordID, "0x") || strings.HasPrefix(req.RecordID, "0X") {
@@ -66,9 +68,10 @@ func (e *Engine) Verify(ctx context.Context, adapter chain.Adapter, req model.Ve
 				id, ok = new(big.Int).SetString(req.RecordID, 16)
 			}
 		}
-		if ok {
-			q.RecordID = id
+		if !ok || id.Sign() <= 0 || id.BitLen() > 256 {
+			return missingRecord(req, model.StatusRecordNotFound), nil
 		}
+		q.RecordID = id
 	}
 	q.App = req.App
 	q.Version = req.Version
@@ -76,21 +79,16 @@ func (e *Engine) Verify(ctx context.Context, adapter chain.Adapter, req model.Ve
 	chainRec, err := adapter.ReadRecord(ctx, q)
 	if err != nil {
 		if errors.Is(err, chain.ErrRecordNotFound) {
-			return &model.VerifyResponse{
-				Network:  req.Network,
-				App:      req.App,
-				Version:  req.Version,
-				RecordID: req.RecordID,
-				Status:   model.StatusRecordNotFound,
-				Checks: model.VerifyChecks{
-					Artifact:      model.CheckUnavailable,
-					SBOM:          model.CheckUnavailable,
-					Scan:          model.CheckUnavailable,
-					SignerTrusted: false,
-				},
-			}, nil
+			return missingRecord(req, model.StatusRecordNotFound), nil
+		}
+		if errors.Is(err, chain.ErrRecordUnavailable) {
+			return missingRecord(req, model.StatusFileUnavailable), nil
 		}
 		return nil, fmt.Errorf("read on-chain record: %w", err)
+	}
+
+	if (req.App != "" && chainRec.App != req.App) || (req.Version != "" && chainRec.Version != req.Version) {
+		return missingRecord(req, model.StatusRecordNotFound), nil
 	}
 
 	checks := model.VerifyChecks{
@@ -199,4 +197,13 @@ func (e *Engine) Verify(ctx context.Context, adapter chain.Adapter, req model.Ve
 		Signer:     chainRec.Signer,
 		RecordedAt: &recTime,
 	}, nil
+}
+
+func missingRecord(req model.VerifyRequest, status string) *model.VerifyResponse {
+	return &model.VerifyResponse{
+		Network: req.Network, App: req.App, Version: req.Version, RecordID: req.RecordID, Status: status,
+		Checks: model.VerifyChecks{
+			Artifact: model.CheckUnavailable, SBOM: model.CheckUnavailable, Scan: model.CheckUnavailable,
+		},
+	}
 }

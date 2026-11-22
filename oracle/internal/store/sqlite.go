@@ -7,7 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/brii26/eth-iota-attestation/oracle/internal/model"
 )
@@ -69,6 +70,28 @@ func NewSQLiteIndex(dbPath string) (*SQLiteIndex, error) {
 	);
 	CREATE INDEX IF NOT EXISTS idx_attestations_lookup ON attestations(network, scan_id);
 
+	CREATE INDEX IF NOT EXISTS idx_attestations_version ON attestations(network, app, version, included_at);
+	CREATE TABLE IF NOT EXISTS iota_transactions (
+		network TEXT NOT NULL,
+		scan_id TEXT NOT NULL,
+		digest TEXT NOT NULL,
+		tx_bytes TEXT NOT NULL,
+		signature TEXT NOT NULL,
+		PRIMARY KEY(network, scan_id)
+	);
+	CREATE TABLE IF NOT EXISTS iota_receipts (
+		network TEXT NOT NULL,
+		scan_id TEXT NOT NULL,
+		finalized_at DATETIME,
+		delete_unlock_at DATETIME,
+		checkpoint TEXT NOT NULL,
+		gas_computation TEXT NOT NULL,
+		gas_storage TEXT NOT NULL,
+		gas_rebate TEXT NOT NULL,
+		tx_size INTEGER NOT NULL,
+		PRIMARY KEY(network, scan_id)
+	);
+
 	CREATE TABLE IF NOT EXISTS sync_state (
 		network TEXT PRIMARY KEY,
 		last_block INTEGER NOT NULL
@@ -103,7 +126,8 @@ func (s *SQLiteIndex) Exists(ctx context.Context, network, scanID string) (bool,
 	return count > 0, nil
 }
 
-// Save inserts an attestation record in the database.
+var ErrDuplicateScanID = errors.New("scan ID already used on this network")
+
 func (s *SQLiteIndex) Save(ctx context.Context, rec AttestationRecord) error {
 	query := `
 	INSERT INTO attestations (
@@ -116,6 +140,10 @@ func (s *SQLiteIndex) Save(ctx context.Context, rec AttestationRecord) error {
 		rec.Status, rec.TxRef, rec.RecordID, rec.SubmittedAt, rec.IncludedAt,
 	)
 	if err != nil {
+		var sqliteErr *sqlite.Error
+		if errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE {
+			return ErrDuplicateScanID
+		}
 		return fmt.Errorf("insert attestation record: %w", err)
 	}
 	return nil
@@ -145,15 +173,20 @@ func (s *SQLiteIndex) UpdateStatus(ctx context.Context, network, scanID, status,
 // GetStatus retrieves the status and receipt info for an attestation.
 func (s *SQLiteIndex) GetStatus(ctx context.Context, network, scanID string) (*model.AttestationStatus, error) {
 	query := `
-	SELECT network, scan_id, status, COALESCE(tx_ref, ''), COALESCE(record_id, ''), submitted_at, included_at
-	FROM attestations
-	WHERE network = ? AND scan_id = ?
+	SELECT a.network, a.scan_id, a.status, COALESCE(a.tx_ref, ''), COALESCE(a.record_id, ''),
+	       a.submitted_at, a.included_at, i.finalized_at, i.delete_unlock_at, i.checkpoint,
+	       i.gas_computation, i.gas_storage, i.gas_rebate, i.tx_size
+	FROM attestations a LEFT JOIN iota_receipts i ON a.network = i.network AND a.scan_id = i.scan_id
+	WHERE a.network = ? AND a.scan_id = ?
 	`
 	row := s.db.QueryRowContext(ctx, query, network, scanID)
 
 	var st model.AttestationStatus
-	var includedAt sql.NullTime
-	err := row.Scan(&st.Network, &st.ScanID, &st.Status, &st.TxRef, &st.RecordID, &st.SubmittedAt, &includedAt)
+	var includedAt, finalizedAt, deleteUnlockAt sql.NullTime
+	var checkpoint, computation, storage, rebate sql.NullString
+	var transactionSize sql.NullInt64
+	err := row.Scan(&st.Network, &st.ScanID, &st.Status, &st.TxRef, &st.RecordID, &st.SubmittedAt,
+		&includedAt, &finalizedAt, &deleteUnlockAt, &checkpoint, &computation, &storage, &rebate, &transactionSize)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil // not found
@@ -165,6 +198,18 @@ func (s *SQLiteIndex) GetStatus(ctx context.Context, network, scanID string) (*m
 		st.IncludedAt = &includedAt.Time
 	}
 
+	if transactionSize.Valid {
+		st.IOTA = &model.IOTAMetrics{
+			Checkpoint: checkpoint.String, Computation: computation.String,
+			Storage: storage.String, Rebate: rebate.String, TransactionSize: uint64(transactionSize.Int64),
+		}
+		if finalizedAt.Valid {
+			st.IOTA.FinalizedAt = &finalizedAt.Time
+		}
+		if deleteUnlockAt.Valid {
+			st.IOTA.DeleteUnlockAt = &deleteUnlockAt.Time
+		}
+	}
 	return &st, nil
 }
 

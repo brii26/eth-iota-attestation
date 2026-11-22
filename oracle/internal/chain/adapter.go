@@ -41,9 +41,10 @@ type Receipt struct {
 
 // Query specifies parameters for reading on-chain records.
 type Query struct {
-	App      string
-	Version  string
-	RecordID *big.Int
+	App              string
+	Version          string
+	RecordID         *big.Int
+	ExternalRecordID string
 }
 
 // ChainRecord represents a record retrieved directly from a blockchain.
