@@ -2,6 +2,23 @@ import { createPublicClient, defineChain, http, isAddress, parseAbi } from "viem
 import { sepolia } from "viem/chains";
 import type { Selection, Verification } from "./api";
 
+let deployedPrivateRegistry: string | undefined;
+
+export async function loadRegistryDeployment() {
+  if (import.meta.env.VITE_PRIVATE_REGISTRY) return;
+  try {
+    const response = await fetch("/deployment.json", { signal: AbortSignal.timeout(3_000) });
+    if (!response.ok || !response.headers.get("Content-Type")?.includes("application/json")) return;
+    const deployment = await response.json();
+    if (deployment.chainId === 1337 && typeof deployment.contractAddress === "string" &&
+        isAddress(deployment.contractAddress)) {
+      deployedPrivateRegistry = deployment.contractAddress;
+    }
+  } catch {
+    return;
+  }
+}
+
 const privateRPC = import.meta.env.VITE_PRIVATE_RPC_URL || "http://127.0.0.1:8545";
 const privateChain = defineChain({
   id: 1337,
@@ -21,7 +38,7 @@ export function ethereumNetwork(network: string) {
   let rpc: string | undefined;
   let chain;
   if (network === "ethereum-private") {
-    address = import.meta.env.VITE_PRIVATE_REGISTRY;
+    address = import.meta.env.VITE_PRIVATE_REGISTRY || deployedPrivateRegistry;
     rpc = privateRPC;
     chain = privateChain;
   } else if (network === "ethereum-sepolia") {
