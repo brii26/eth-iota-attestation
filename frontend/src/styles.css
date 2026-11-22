@@ -50,3 +50,6 @@ dd { margin-top: .25rem; }
 @media (max-width: 31rem) {
   .search { grid-template-columns: 1fr; }
 }
+
+.wallet-actions { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; margin: 1rem 0; }
+.wallet-actions label { flex: 1 1 18rem; }
