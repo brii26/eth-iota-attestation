@@ -323,3 +323,14 @@ func (a *IOTAAdapter) reconcileOwner(ctx context.Context, owner string) error {
 		cursor = page.Cursor
 	}
 }
+
+func (a *IOTAAdapter) ReadReceipt(ctx context.Context, id string) (*store.IOTAReceipt, error) {
+	if !iotaObjectID.MatchString(id) {
+		return nil, ErrRecordNotFound
+	}
+	record, err := a.read(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &record.IOTAReceipt, nil
+}

@@ -184,13 +184,15 @@ async function read(id: string, stateMarker = marker) {
   }
   const tx = await fetchTransaction(digest);
   if (!tx) throw new RequestError(503, "notarization creation transaction is unavailable");
-  const state = JSON.parse(notarization.state.data.toString());
+  const stored = notarization.state.data.toString();
+  const state = JSON.parse(stored);
   const record = stateMarker === baselineMarker ? hashes(state) : payload(state);
   const lock = notarization.immutableMetadata.locking?.deleteLock;
   const deleteUnlockAt = lock?.type === "UnlockAt" && typeof lock.args === "number"
     ? new Date(lock.args * 1000).toISOString() : undefined;
   return {
     ...record, ...await receipt(tx, id), deleteUnlockAt,
+    recordBytes: Buffer.byteLength(stored),
     timestamp: new Date(Number(notarization.immutableMetadata.createdAt)).toISOString(),
   };
 }
