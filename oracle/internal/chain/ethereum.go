@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/brii26/eth-iota-attestation/smart-contract/registry"
 )
@@ -217,18 +219,27 @@ func (a *EthereumAdapter) ReadRecord(ctx context.Context, query Query) (*ChainRe
 		rec, err = a.caller.GetRecord(opts, query.RecordID)
 		recordIDStr = query.RecordID.String()
 	} else if query.App != "" && query.Version != "" {
+		block, blockErr := a.CurrentBlockNumber(ctx)
+		if blockErr != nil {
+			return nil, fmt.Errorf("get registry block: %w", blockErr)
+		}
+		opts.BlockNumber = new(big.Int).SetUint64(block)
 		rec, err = a.caller.GetLatestRecord(opts, query.App, query.Version)
 		if err == nil {
-			ids, idErr := a.caller.GetRecordIds(opts, query.App, query.Version, big.NewInt(0), big.NewInt(100))
-			if idErr == nil && len(ids) > 0 {
-				recordIDStr = ids[len(ids)-1].String()
+			id, idErr := a.latestRecordID(opts, query.App, query.Version)
+			if idErr != nil {
+				return nil, idErr
 			}
+			recordIDStr = id.String()
 		}
 	} else {
 		return nil, errors.New("query must specify either recordId or both app and version")
 	}
 
 	if err != nil {
+		if missingRegistryRecord(err) {
+			return nil, ErrRecordNotFound
+		}
 		return nil, fmt.Errorf("call registry: %w", err)
 	}
 
@@ -247,6 +258,50 @@ func (a *EthereumAdapter) ReadRecord(ctx context.Context, query Query) (*ChainRe
 		Signer:       rec.Signer.Hex(),
 		Timestamp:    time.Unix(rec.Timestamp.Int64(), 0).UTC(),
 	}, nil
+}
+
+func missingRegistryRecord(err error) bool {
+	revert, ok := ethclient.RevertErrorData(err)
+	if !ok || len(revert) < 4 {
+		return false
+	}
+	abi, err := registry.AttestationRegistryMetaData.GetAbi()
+	if err != nil {
+		return false
+	}
+	for _, name := range []string{"NoRecordsForAppVersion", "RecordNotFound"} {
+		definition := abi.Errors[name]
+		if bytes.Equal(revert[:4], definition.ID[:4]) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *EthereumAdapter) latestRecordID(opts *bind.CallOpts, app, version string) (*big.Int, error) {
+	upper, err := a.caller.RecordCount(opts)
+	if err != nil {
+		return nil, fmt.Errorf("get registry record count: %w", err)
+	}
+	lower, one := new(big.Int), big.NewInt(1)
+	var latest *big.Int
+	for lower.Cmp(upper) < 0 {
+		mid := new(big.Int).Rsh(new(big.Int).Add(lower, upper), 1)
+		page, err := a.caller.GetRecordIds(opts, app, version, mid, one)
+		if err != nil {
+			return nil, fmt.Errorf("get registry record ID: %w", err)
+		}
+		if len(page) == 0 {
+			upper.Set(mid)
+		} else {
+			latest = page[0]
+			lower.Add(mid, one)
+		}
+	}
+	if latest == nil {
+		return nil, ErrRecordNotFound
+	}
+	return latest, nil
 }
 
 // IsSignerAuthorized checks if the signer is currently an authorized oracle on-chain.
