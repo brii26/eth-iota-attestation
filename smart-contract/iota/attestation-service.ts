@@ -9,18 +9,18 @@ import { iota_client_helpers } from "@iota/iota-interaction-ts/node/index.js";
 import { CreateNotarizationLocked, NotarizationBuilderLocked, NotarizationClientReadOnly, TimeLock } from "@iota/notarization/node/index.js";
 
 const marker = "artifact-attestation-v1";
+const baselineMarker = "artifact-baseline-v1";
 const objectID = /^0x[0-9a-f]{64}$/;
 const digestFormat = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const options = { showEffects: true, showInput: true, showObjectChanges: true, showRawInput: true };
 
-type RecordPayload = {
+type Hashes = { artifactHash: string; sbomHash: string; scanHash: string };
+
+type RecordPayload = Hashes & {
   schemaVersion: 1;
   app: string;
   version: string;
   scanId: string;
-  artifactHash: string;
-  sbomHash: string;
-  scanHash: string;
 };
 
 class RequestError extends Error {
@@ -93,12 +93,21 @@ const readOnly = packageID
   ? await NotarizationClientReadOnly.createWithPkgId(notarizationRPC, packageID)
   : await NotarizationClientReadOnly.create(notarizationRPC);
 
-async function prepare(record: RecordPayload) {
+function hashes(value: unknown): Hashes {
+  if (typeof value !== "object" || value === null) throw new RequestError(400, "invalid hashes");
+  const { artifactHash, sbomHash, scanHash } = value as Hashes;
+  if (![artifactHash, sbomHash, scanHash].every((hash) => typeof hash === "string" && objectID.test(hash))) {
+    throw new RequestError(400, "invalid hashes");
+  }
+  return { artifactHash, sbomHash, scanHash };
+}
+
+async function prepare(record: RecordPayload | Hashes, stateMarker = marker) {
   const sequence = await rpc.getLatestCheckpointSequenceNumber();
   const checkpoint = await rpc.getCheckpoint({ id: sequence });
   const deleteUnlockAt = Math.floor(Number(checkpoint.timestampMs) / 1000) + lockSeconds;
   const builder = NotarizationBuilderLocked.locked()
-    .withStringState(JSON.stringify(record), marker)
+    .withStringState(JSON.stringify(record), stateMarker)
     .withImmutableDescription("Software artifact attestation")
     .withDeleteLock(TimeLock.withUnlockAt(deleteUnlockAt));
   const transaction = new CreateNotarizationLocked(builder);
@@ -161,7 +170,7 @@ async function submit(value: unknown) {
   return { ...await receipt(confirmed), txSize: bytes.length };
 }
 
-async function read(id: string) {
+async function read(id: string, stateMarker = marker) {
   if (!objectID.test(id)) throw new RequestError(400, "invalid IOTA object ID");
   const object = await rpc.getObject({ id, options: { showPreviousTransaction: true } });
   if (object.error?.code === "notExists" || object.error?.code === "deleted") {
@@ -170,12 +179,13 @@ async function read(id: string) {
   const digest = object.data?.previousTransaction;
   if (!digest) throw new RequestError(503, "notarization transaction is unavailable");
   const notarization = await readOnly.getNotarizationById(id);
-  if (notarization.method !== "Locked" || notarization.state.metadata !== marker) {
+  if (notarization.method !== "Locked" || notarization.state.metadata !== stateMarker) {
     throw new RequestError(404, "object is not a locked attestation");
   }
   const tx = await fetchTransaction(digest);
   if (!tx) throw new RequestError(503, "notarization creation transaction is unavailable");
-  const record = payload(JSON.parse(notarization.state.data.toString()));
+  const state = JSON.parse(notarization.state.data.toString());
+  const record = stateMarker === baselineMarker ? hashes(state) : payload(state);
   const lock = notarization.immutableMetadata.locking?.deleteLock;
   const deleteUnlockAt = lock?.type === "UnlockAt" && typeof lock.args === "number"
     ? new Date(lock.args * 1000).toISOString() : undefined;
@@ -213,6 +223,10 @@ createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     if (req.method === "POST" && url.pathname === "/prepare") {
       reply(res, 200, await prepare(payload(await body(req))));
+    } else if (req.method === "POST" && url.pathname === "/baseline/prepare") {
+      reply(res, 200, await prepare(hashes(await body(req)), baselineMarker));
+    } else if (req.method === "GET" && url.pathname.startsWith("/baseline/record/")) {
+      reply(res, 200, await read(url.pathname.slice("/baseline/record/".length), baselineMarker));
     } else if (req.method === "POST" && url.pathname === "/submit") {
       reply(res, 200, await submit(await body(req)));
     } else if (req.method === "GET" && url.pathname.startsWith("/record/")) {
