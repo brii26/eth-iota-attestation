@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,14 +19,15 @@ import (
 
 // Config holds runtime dependencies and options for the API server.
 type Config struct {
-	S3Store         *store.S3Store
-	BlobStore       verify.BlobStore
-	Index           *store.SQLiteIndex
-	ChainAdapter    chain.Adapter
-	Router          *chain.Router
-	VerdaccioClient *verify.VerdaccioClient
-	ArtifactFetcher verify.ArtifactFetcher
-	MaxGrypeDBAge   time.Duration
+	S3Store           *store.S3Store
+	BlobStore         verify.BlobStore
+	Index             *store.SQLiteIndex
+	ChainAdapter      chain.Adapter
+	Router            *chain.Router
+	VerdaccioClient   *verify.VerdaccioClient
+	ArtifactFetcher   verify.ArtifactFetcher
+	MaxGrypeDBAge     time.Duration
+	AuthorizePipeline func(context.Context, string, string) bool
 }
 
 // Server handles HTTP requests for the oracle.
@@ -98,12 +100,13 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 func (s *Server) handleCreateAttestation(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// 1. Authenticate pipeline via OIDC stub
-	authHeader := r.Header.Get("Authorization")
-	token := strings.TrimPrefix(authHeader, "Bearer ")
-	token = strings.TrimSpace(token)
+	scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" {
+		writeJSONError(w, http.StatusForbidden, model.ErrCodeUnauthorizedPipeline, "unauthorized pipeline submission")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<20)
 
-	// Decode request body
 	var req model.AttestationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid JSON payload")
@@ -130,6 +133,13 @@ func (s *Server) handleCreateAttestation(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusInternalServerError, model.ErrCodeInternal, "no chain adapter configured")
 		return
 	}
+	if len(req.SBOMBytes) > 0 || len(req.ScanBytes) > 0 {
+		if len(req.SBOM) > 0 || len(req.Scan) > 0 || !json.Valid(req.SBOMBytes) || !json.Valid(req.ScanBytes) {
+			writeJSONError(w, http.StatusBadRequest, model.ErrCodeInvalidInput, "provide exactly one SBOM and scan as valid JSON")
+			return
+		}
+		req.SBOM, req.Scan = req.SBOMBytes, req.ScanBytes
+	}
 	if len(req.SBOM) == 0 || len(req.Scan) == 0 {
 		writeJSONError(w, http.StatusBadRequest, model.ErrCodeInvalidInput, "sbom and scan payloads are required")
 		return
@@ -140,7 +150,7 @@ func (s *Server) handleCreateAttestation(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Check pipeline authorization for app
-	if !verify.VerifyPipeline(token, req.App) {
+	if s.cfg.AuthorizePipeline == nil || !s.cfg.AuthorizePipeline(ctx, token, req.App) {
 		writeJSONError(w, http.StatusForbidden, model.ErrCodeUnauthorizedPipeline, "unauthorized pipeline submission")
 		return
 	}

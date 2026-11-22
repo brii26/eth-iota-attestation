@@ -53,21 +53,6 @@ func TestValidateGrypeFreshness(t *testing.T) {
 	}
 }
 
-func TestVerifyPipeline(t *testing.T) {
-	if !VerifyPipeline("valid-token", "my-app") {
-		t.Errorf("expected valid token to pass")
-	}
-	if VerifyPipeline("", "my-app") {
-		t.Errorf("expected empty token to fail")
-	}
-	if VerifyPipeline("unauthorized", "my-app") {
-		t.Errorf("expected unauthorized token to fail")
-	}
-	if VerifyPipeline("valid-token", "../../etc/passwd") {
-		t.Errorf("expected path traversal app name to fail")
-	}
-}
-
 func TestVerdaccioClient(t *testing.T) {
 	mockTarball := []byte("fake-tarball-bytes")
 

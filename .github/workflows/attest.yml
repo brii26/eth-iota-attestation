@@ -1,0 +1,64 @@
+name: Attest example artifact
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  attest:
+    if: github.ref == 'refs/heads/main' && vars.ORACLE_URL != '' && vars.VERDACCIO_URL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ORACLE_URL: ${{ vars.ORACLE_URL }}
+      VERDACCIO_URL: ${{ vars.VERDACCIO_URL }}
+      OIDC_AUDIENCE: ${{ vars.OIDC_AUDIENCE }}
+      ATTESTATION_NETWORK: ${{ vars.ATTESTATION_NETWORK || 'ethereum-private' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '26.0.0'
+          package-manager-cache: false
+      - uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c
+        with:
+          syft-version: v1.57.2
+      - uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439
+        with:
+          grype-version: v0.122.1
+      - name: Build and publish example package
+        working-directory: examples/attestation-demo
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.VERDACCIO_TOKEN }}
+        run: |
+          set -euo pipefail
+          npm version "1.0.0-ci.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" --no-git-tag-version --ignore-scripts
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/package-pack.json"
+          archive="$(jq -er '.[0].filename' "$RUNNER_TEMP/package-pack.json")"
+          registry_auth="$(node -e 'const u = new URL(process.env.VERDACCIO_URL); process.stdout.write("//" + u.host + u.pathname.replace(/\/?$/, "/"))')"
+          npmrc="$RUNNER_TEMP/attest.npmrc"
+          umask 077
+          printf '%s:_authToken=${NODE_AUTH_TOKEN}\n' "$registry_auth" > "$npmrc"
+          npm publish "$RUNNER_TEMP/$archive" --registry "$VERDACCIO_URL" --userconfig "$npmrc" --tag ci --ignore-scripts
+          printf 'ATTESTATION_ARCHIVE=%s\n' "$RUNNER_TEMP/$archive" >> "$GITHUB_ENV"
+      - name: Build SBOM and scan
+        run: |
+          set -euo pipefail
+          scan_input="$(mktemp -d "$RUNNER_TEMP/scan-input.XXXXXX")"
+          tar -xzf "$ATTESTATION_ARCHIVE" -C "$scan_input"
+          syft "dir:$scan_input/package" -o "cyclonedx-json=$RUNNER_TEMP/sbom.json"
+          grype "sbom:$RUNNER_TEMP/sbom.json" -o json > "$RUNNER_TEMP/scan.json"
+      - name: Submit attestation
+        run: node scripts/submit-attestation.mjs examples/attestation-demo/package.json "$ATTESTATION_ARCHIVE" "$RUNNER_TEMP/sbom.json" "$RUNNER_TEMP/scan.json"
