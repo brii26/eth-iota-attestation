@@ -3,6 +3,7 @@ package verify
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -103,6 +104,7 @@ func (e *Engine) Verify(ctx context.Context, adapter chain.Adapter, req model.Ve
 	var sbomMismatch bool
 	var scanMismatch bool
 	var isStale bool
+	var dbBuiltAt *time.Time
 
 	// 2. Fetch and verify artifact from Verdaccio
 	if e.artifactFetcher != nil {
@@ -150,8 +152,10 @@ func (e *Engine) Verify(ctx context.Context, adapter chain.Adapter, req model.Ve
 			}
 
 			// Validate Grype scan freshness (does NOT alter integrity status, only sets stale flag)
-			if _, err := ValidateGrypeFreshness(scanBytes, e.maxGrypeDBAge, time.Now().UTC()); err != nil {
-				isStale = true
+			builtAt, err := ValidateGrypeFreshness(scanBytes, e.maxGrypeDBAge, time.Now().UTC())
+			isStale = err != nil
+			if !builtAt.IsZero() && !scanMismatch {
+				dbBuiltAt = &builtAt
 			}
 		}
 	} else {
@@ -187,15 +191,22 @@ func (e *Engine) Verify(ctx context.Context, adapter chain.Adapter, req model.Ve
 	recTime := chainRec.Timestamp
 
 	return &model.VerifyResponse{
-		Network:    req.Network,
-		App:        chainRec.App,
-		Version:    chainRec.Version,
-		RecordID:   chainRec.RecordID,
-		Status:     overallStatus,
-		Stale:      isStale,
-		Checks:     checks,
-		Signer:     chainRec.Signer,
-		RecordedAt: &recTime,
+		Network:        req.Network,
+		App:            chainRec.App,
+		Version:        chainRec.Version,
+		RecordID:       chainRec.RecordID,
+		Status:         overallStatus,
+		Stale:          isStale,
+		Checks:         checks,
+		Signer:         chainRec.Signer,
+		RecordedAt:     &recTime,
+		ScanID:         chainRec.ScanID,
+		GrypeDBBuiltAt: dbBuiltAt,
+		RecordHashes: &model.ClaimedHashes{
+			Artifact: "0x" + hex.EncodeToString(chainRec.ArtifactHash[:]),
+			SBOM:     "0x" + hex.EncodeToString(chainRec.SBOMHash[:]),
+			Scan:     "0x" + hex.EncodeToString(chainRec.ScanHash[:]),
+		},
 	}, nil
 }
 

@@ -21,6 +21,8 @@ type AttestationRequest struct {
 	ClaimedHashes ClaimedHashes   `json:"claimedHashes"`
 	SBOM          json.RawMessage `json:"sbom"`
 	Scan          json.RawMessage `json:"scan"`
+	SBOMBytes     []byte          `json:"sbomBase64,omitempty"`
+	ScanBytes     []byte          `json:"scanBase64,omitempty"`
 }
 
 // AttestationStatus represents the response for GET /api/v1/attestations/{network}/{scanId}.

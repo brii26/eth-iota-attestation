@@ -1,30 +1,78 @@
 package verify
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"regexp"
 	"strings"
+	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
 )
 
-// VerifyPipeline validates whether the pipeline bearer token is authorized to submit for the given app.
-// ponytail: OIDC stub implementation for Issue #8. Upgrade to full JWT OIDC token verification in Issue #15.
-func VerifyPipeline(token string, app string) bool {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return false
-	}
+const GitHubIssuer = "https://token.actions.githubusercontent.com"
 
-	// Reject explicit invalid test tokens
-	if strings.EqualFold(token, "invalid") || strings.EqualFold(token, "unauthorized") {
-		return false
-	}
+var packageName = regexp.MustCompile(`^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$`)
+var githubRepository = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]*/[a-zA-Z0-9_.-]+$`)
 
-	// Basic app name safety
-	if strings.Contains(app, "..") || strings.Contains(app, "/") {
-		// Scoped packages like @scope/app are allowed, but path traversal is rejected
-		parts := strings.Split(app, "/")
-		if len(parts) > 2 {
-			return false
+type PipelineVerifier struct {
+	token *oidc.IDTokenVerifier
+	rules map[string]PipelineRule
+}
+
+type PipelineRule struct {
+	Repository string `json:"repository"`
+	Workflow   string `json:"workflowRef"`
+}
+
+func NewPipelineVerifier(ctx context.Context, audience, allowlist string) (*PipelineVerifier, error) {
+	if audience == "" || allowlist == "" {
+		return nil, errors.New("pipeline audience and app allowlist are required")
+	}
+	var rules map[string]PipelineRule
+	if err := json.Unmarshal([]byte(allowlist), &rules); err != nil || len(rules) == 0 {
+		return nil, errors.New("pipeline allowlist must map package names to repository and workflowRef")
+	}
+	for app, rule := range rules {
+		if !packageName.MatchString(app) || !githubRepository.MatchString(rule.Repository) ||
+			!strings.HasPrefix(rule.Workflow, rule.Repository+"/.github/workflows/") ||
+			!strings.Contains(rule.Workflow, "@refs/heads/") {
+			return nil, errors.New("pipeline allowlist contains an invalid package, repository or branch workflow")
 		}
 	}
+	ctx = oidc.ClientContext(ctx, &http.Client{Timeout: 10 * time.Second})
+	keys := oidc.NewRemoteKeySet(ctx, GitHubIssuer+"/.well-known/jwks")
+	return newPipelineVerifier(audience, keys, rules), nil
+}
 
-	return true
+func newPipelineVerifier(audience string, keys oidc.KeySet, rules map[string]PipelineRule) *PipelineVerifier {
+	return &PipelineVerifier{
+		token: oidc.NewVerifier(GitHubIssuer, keys, &oidc.Config{
+			ClientID: audience, SupportedSigningAlgs: []string{oidc.RS256},
+		}),
+		rules: rules,
+	}
+}
+
+func (p *PipelineVerifier) Authorize(ctx context.Context, token, app string) bool {
+	rule, allowed := p.rules[app]
+	if !allowed || token == "" {
+		return false
+	}
+	verified, err := p.token.Verify(ctx, token)
+	if err != nil {
+		return false
+	}
+	var claims struct {
+		Repository string `json:"repository"`
+		Workflow   string `json:"workflow_ref"`
+		Event      string `json:"event_name"`
+	}
+	if err := verified.Claims(&claims); err != nil {
+		return false
+	}
+	return claims.Repository == rule.Repository && claims.Workflow == rule.Workflow &&
+		(claims.Event == "push" || claims.Event == "workflow_dispatch")
 }

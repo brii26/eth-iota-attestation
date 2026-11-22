@@ -35,6 +35,9 @@ func main() {
 	rustfsAccessKey := env("RUSTFS_ACCESS_KEY", "rustfsadmin")
 	rustfsSecretKey := env("RUSTFS_SECRET_KEY", "rustfsdevpassword123")
 
+	audience, allowlist := os.Getenv("OIDC_AUDIENCE"), os.Getenv("OIDC_APP_ALLOWLIST")
+	pipelineEnabled := audience != "" || allowlist != ""
+
 	maxAgeHours, _ := strconv.Atoi(env("MAX_GRYPE_DB_AGE_HOURS", "48"))
 	maxAge := time.Duration(maxAgeHours) * time.Hour
 
@@ -55,7 +58,10 @@ func main() {
 		SecretKey: rustfsSecretKey,
 	})
 	if err != nil {
-		log.Printf("warning: RustFS S3 store not available (%v); running with S3 disabled", err)
+		if pipelineEnabled {
+			log.Fatalf("cannot enable attestation submissions without RustFS: %v", err)
+		}
+		log.Printf("warning: RustFS S3 store not available (%v)", err)
 	}
 
 	verdaccioClient := verify.NewVerdaccioClient(verdaccioURL)
@@ -81,8 +87,7 @@ func main() {
 			router.Register(privAdapter)
 			log.Printf("Registered chain adapter: ethereum-private (contract: %s, rpc: %s)", privContract, privRPC)
 		}
-	} else {
-		// ponytail: If Geth private chain keys are not supplied, register MockAdapter for ethereum-private
+	} else if !pipelineEnabled && os.Getenv("ORACLE_ENABLE_MOCK") == "1" {
 		mockPriv := chain.NewMockAdapter()
 		router.Register(mockPriv)
 		log.Printf("Notice: ETHEREUM_ORACLE_PRIVATE_KEY or contract address not set; using mock adapter for local testing")
@@ -126,12 +131,24 @@ func main() {
 		router.Register(iotaAdapter)
 	}
 
+	var authorizePipeline func(context.Context, string, string) bool
+	if pipelineEnabled {
+		pipeline, err := verify.NewPipelineVerifier(context.Background(), audience, allowlist)
+		if err != nil {
+			log.Fatalf("invalid GitHub OIDC configuration: %v", err)
+		}
+		authorizePipeline = pipeline.Authorize
+	} else {
+		log.Print("GitHub OIDC is unconfigured. Attestation submissions are disabled.")
+	}
+
 	server := api.NewServer(api.Config{
-		S3Store:         s3Store,
-		Index:           idx,
-		Router:          router,
-		VerdaccioClient: verdaccioClient,
-		MaxGrypeDBAge:   maxAge,
+		AuthorizePipeline: authorizePipeline,
+		S3Store:           s3Store,
+		Index:             idx,
+		Router:            router,
+		VerdaccioClient:   verdaccioClient,
+		MaxGrypeDBAge:     maxAge,
 	})
 
 	// Start background on-chain verification listeners for Ethereum networks
