@@ -71,6 +71,16 @@ func NewSQLiteIndex(dbPath string) (*SQLiteIndex, error) {
 	CREATE INDEX IF NOT EXISTS idx_attestations_lookup ON attestations(network, scan_id);
 
 	CREATE INDEX IF NOT EXISTS idx_attestations_version ON attestations(network, app, version, included_at);
+	CREATE TABLE IF NOT EXISTS ethereum_transactions (
+		network TEXT NOT NULL,
+		scan_id TEXT NOT NULL,
+		hash TEXT NOT NULL,
+		raw BLOB NOT NULL,
+		sender TEXT NOT NULL,
+		nonce INTEGER NOT NULL,
+		PRIMARY KEY(network, scan_id),
+		UNIQUE(network, sender, nonce)
+	);
 	CREATE TABLE IF NOT EXISTS iota_transactions (
 		network TEXT NOT NULL,
 		scan_id TEXT NOT NULL,

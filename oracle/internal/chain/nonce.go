@@ -15,6 +15,7 @@ type NonceManager struct {
 	mu          sync.Mutex
 	address     common.Address
 	current     uint64
+	floor       uint64
 	initialized bool
 }
 
@@ -35,7 +36,7 @@ func (n *NonceManager) Acquire(ctx context.Context, client *ethclient.Client) (u
 			n.mu.Unlock()
 			return 0, nil, fmt.Errorf("fetch pending nonce for %s: %w", n.address.Hex(), err)
 		}
-		n.current = pendingNonce
+		n.current = max(pendingNonce, n.floor)
 		n.initialized = true
 	}
 
@@ -44,6 +45,7 @@ func (n *NonceManager) Acquire(ctx context.Context, client *ethclient.Client) (u
 	done := func(success bool) {
 		if success {
 			n.current++
+			n.floor = max(n.floor, n.current)
 		} else {
 			// Re-sync with node on next transaction if submission failed
 			n.initialized = false
@@ -52,4 +54,11 @@ func (n *NonceManager) Acquire(ctx context.Context, client *ethclient.Client) (u
 	}
 
 	return allocatedNonce, done, nil
+}
+
+func (n *NonceManager) SetFloor(floor uint64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.floor = max(n.floor, floor)
+	n.current = max(n.current, n.floor)
 }
