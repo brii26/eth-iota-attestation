@@ -318,8 +318,19 @@ func submitRQ2(parent context.Context, server http.Handler, network chain.Adapte
 		}
 	}
 	start = time.Now()
-	if _, err := network.ReadRecord(ctx, query); err != nil {
-		return fail(err)
+	readDeadline, finish := context.WithTimeout(ctx, 30*time.Second)
+	defer finish()
+	for {
+		_, err := network.ReadRecord(readDeadline, query)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, chain.ErrRecordUnavailable) || readDeadline.Err() != nil {
+			return fail(err)
+		}
+		if err := pause(readDeadline, time.Second); err != nil {
+			return fail(err)
+		}
 	}
 	sample.ReadMS = milliseconds(time.Since(start))
 	start = time.Now()
