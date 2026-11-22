@@ -128,6 +128,22 @@ func (a *IOTAAdapter) call(ctx context.Context, method, path string, input, outp
 	return json.NewDecoder(res.Body).Decode(output)
 }
 
+func (a *IOTAAdapter) prepare(ctx context.Context, route string, payload any) (store.IOTATransaction, error) {
+	var prepared store.IOTATransaction
+	err := a.call(ctx, http.MethodPost, route, payload, &prepared)
+	var serviceError *iotaServiceError
+	if errors.As(err, &serviceError) && serviceError.Status == http.StatusServiceUnavailable && ctx.Err() == nil {
+		err = a.call(ctx, http.MethodPost, route, payload, &prepared)
+	}
+	if err != nil {
+		return prepared, fmt.Errorf("prepare IOTA write: %w", err)
+	}
+	if prepared.Digest == "" || prepared.Bytes == "" || prepared.Signature == "" {
+		return prepared, errors.New("IOTA service returned an incomplete transaction")
+	}
+	return prepared, nil
+}
+
 func (a *IOTAAdapter) WriteRecord(ctx context.Context, record Record) (*Receipt, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -148,17 +164,9 @@ func (a *IOTAAdapter) WriteRecord(ctx context.Context, record Record) (*Receipt,
 			SBOMHash:     "0x" + hex.EncodeToString(record.SBOMHash[:]),
 			ScanHash:     "0x" + hex.EncodeToString(record.ScanHash[:]),
 		}
-		var prepared store.IOTATransaction
-		err := a.call(ctx, http.MethodPost, "/prepare", payload, &prepared)
-		var serviceError *iotaServiceError
-		if errors.As(err, &serviceError) && serviceError.Status == http.StatusServiceUnavailable && ctx.Err() == nil {
-			err = a.call(ctx, http.MethodPost, "/prepare", payload, &prepared)
-		}
+		prepared, err := a.prepare(ctx, "/prepare", payload)
 		if err != nil {
-			return nil, fmt.Errorf("prepare IOTA write: %w", err)
-		}
-		if prepared.Digest == "" || prepared.Bytes == "" || prepared.Signature == "" {
-			return nil, errors.New("IOTA service returned an incomplete transaction")
+			return nil, err
 		}
 		if err := a.index.SaveIOTATransaction(ctx, a.name, record.ScanID, prepared); err != nil {
 			return nil, err

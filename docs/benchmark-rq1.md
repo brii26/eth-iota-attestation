@@ -25,14 +25,22 @@ ATTESTATION_RQ1_CONFIG=/path/to/rq1.json \
 
 The runner records fixtures on the two configured ledgers. It checks
 individual file changes, wrong versions, stale scans, duplicate scan IDs,
-and unauthorized pipeline requests. File changes are injected into the
-test verifier's read path. Each case reports its observed outcome and the
-component enforcing the rule. The runner records mismatches in the JSON
+and unauthorized pipeline requests. File changes use different byte offsets
+in the test verifier's read path. Each case reports the ledger, the target
+(attestation or baseline), the outcome, and the component enforcing the rule. The runner records mismatches in the JSON
 before returning a failing test.
 
 The stale-index check changes the order in a temporary SQLite database
 and compares ledger discovery against a known older and newer record.
-The signer scenario removes and restores the private Geth oracle permission
-and checks an alternate signer policy on IOTA. The replay scenario uses a
+The signer scenario removes the private Geth oracle permission, tests a read
+and an attempted write, then restores the permission. On IOTA, the verifier
+checks the same record using an alternate signer policy. The replay scenario uses a
 separate temporary index to measure what the IOTA ledger accepts outside
 the original application index.
+
+Both baselines check all three modified hashes and look up the same hashes
+under the wrong-version scenario. Separate writes simulate replayed scan IDs
+and stale scan content. The Ethereum baseline checks its writer restriction,
+and the IOTA baseline reads the same object without trusting its signer.
+The pipeline and stale-index cases are marked as not applicable to the
+three-hash baseline.

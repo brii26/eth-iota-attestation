@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -22,6 +21,7 @@ import (
 	"github.com/brii26/eth-iota-attestation/oracle/internal/store"
 	"github.com/brii26/eth-iota-attestation/oracle/internal/verify"
 	"github.com/brii26/eth-iota-attestation/smart-contract/registry"
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -33,6 +33,7 @@ type rq1Case struct {
 	Network   string `json:"network"`
 	App       string `json:"app"`
 	Version   string `json:"version"`
+	Target    string `json:"target"`
 	Scenario  string `json:"scenario"`
 	Component string `json:"component"`
 	Expected  string `json:"expected"`
@@ -41,35 +42,44 @@ type rq1Case struct {
 
 type alteredBlobs struct {
 	verify.BlobStore
-	file string
+	file    string
+	variant int
 }
 
-func alter(data []byte, err error, flip bool) ([]byte, error) {
-	if err == nil && flip {
-		data = append(bytes.Clone(data), '\n')
+func alter(data []byte, err error, flip bool, variant int) ([]byte, error) {
+	if err != nil || !flip {
+		return data, err
 	}
-	return data, err
+	altered := bytes.Clone(data)
+	if len(altered) == 0 {
+		return []byte{'\n'}, nil
+	}
+	altered[variant%len(altered)] ^= 1
+	return altered, nil
 }
 
 func (s alteredBlobs) GetSBOM(ctx context.Context, key string) ([]byte, error) {
 	data, err := s.BlobStore.GetSBOM(ctx, key)
-	return alter(data, err, s.file == "sbom")
+	return alter(data, err, s.file == "sbom", s.variant)
 }
 
 func (s alteredBlobs) GetScan(ctx context.Context, key string) ([]byte, error) {
 	data, err := s.BlobStore.GetScan(ctx, key)
-	return alter(data, err, s.file == "scan")
+	return alter(data, err, s.file == "scan", s.variant)
 }
 
 type alteredPackage struct {
 	verify.ArtifactFetcher
 	changed bool
+	variant int
 }
 
 func (s alteredPackage) FetchArtifact(ctx context.Context, app, version string) ([]byte, error) {
 	data, err := s.ArtifactFetcher.FetchArtifact(ctx, app, version)
-	return alter(data, err, s.changed)
+	return alter(data, err, s.changed, s.variant)
 }
+
+const staleGrypeScan = `{"descriptor":{"db":{"built":"2000-01-01T00:00:00Z"}}}`
 
 func TestRQ1IntegrityMatrix(t *testing.T) {
 	configPath := os.Getenv("ATTESTATION_RQ1_CONFIG")
@@ -194,13 +204,16 @@ func TestRQ1IntegrityMatrix(t *testing.T) {
 	type baselineCase struct {
 		network chain.Adapter
 		fixture Fixture
+		variant int
 	}
 	var baselines []baselineCase
-	for _, fixture := range dataset.Fixtures {
+	for variant, fixture := range dataset.Fixtures {
 		for _, network := range []chain.Adapter{eth, iota} {
 			add := func(scenario, component, want, observed string) {
-				results = append(results, rq1Case{network.Name(), fixture.App, fixture.Version, scenario, component, want, observed})
+				results = append(results, rq1Case{network.Name(), fixture.App, fixture.Version, "attestation", scenario, component, want, observed})
 			}
+			t.Logf("fixture %d/%d: %s %s", variant+1, len(dataset.Fixtures), network.Name(), fixture.App)
+			baselines = append(baselines, baselineCase{network: network, fixture: fixture, variant: variant})
 			sample := submitRQ2(ctx, server, network, token, filepath.Dir(cfg.Manifest), fixture)
 			if sample.Failure != "" {
 				add("valid", "oracle", model.StatusValid, sample.Failure)
@@ -212,7 +225,7 @@ func TestRQ1IntegrityMatrix(t *testing.T) {
 				{"artifact", model.StatusArtifactMismatch}, {"sbom", model.StatusSBOMMismatch}, {"scan", model.StatusScanMismatch},
 			} {
 				engine := verify.NewEngine(verify.EngineConfig{
-					ArtifactFetcher: alteredPackage{source, item.file == "artifact"}, BlobStore: alteredBlobs{blobs, item.file},
+					ArtifactFetcher: alteredPackage{source, item.file == "artifact", variant}, BlobStore: alteredBlobs{blobs, item.file, variant},
 				})
 				add(item.file+"-changed", "verifier", item.status, integrityResult(ctx, engine, network, request))
 			}
@@ -221,12 +234,16 @@ func TestRQ1IntegrityMatrix(t *testing.T) {
 			otherVersion.Version += "-different"
 			add("wrong-version", "record-binding", model.StatusRecordNotFound, integrityResult(ctx, engine, network, otherVersion))
 			if network.Name() == eth.Name() {
-				add("direct-replay", "ethereum-contract", "ScanIdAlreadyUsed", ethereumReplay(ctx, directETH, fixture, sample.ScanID))
-				observed, err := verifyAfterRevocation(ctx, client, fullRegistry, admin, writer.From, engine, eth, request)
+				add("direct-replay", "ethereum-contract", "ScanIdAlreadyUsed", ethereumDirectWrite(ctx, directETH, fixture, sample.ScanID, "ScanIdAlreadyUsed"))
+				observed, write, err := verifyAfterRevocation(ctx, client, fullRegistry, admin, writer.From, engine, eth, request, func(ctx context.Context) string {
+					scanID := fmt.Sprintf("rq1-untrusted-%x", randomID())
+					return ethereumDirectWrite(ctx, directETH, fixture, scanID, "UnauthorizedOracle")
+				})
 				if err != nil {
 					t.Fatal(err)
 				}
 				add("untrusted-signer", "ethereum-contract", model.StatusUntrustedSigner, observed)
+				add("unauthorized-oracle-write", "ethereum-contract", "UnauthorizedOracle", write)
 			} else {
 				add("direct-replay", "iota-ledger-with-separate-index", "accepted",
 					iotaReplay(ctx, directIOTA, outside, fixture, sample.ScanID))
@@ -248,7 +265,7 @@ func TestRQ1IntegrityMatrix(t *testing.T) {
 			add("replay-scan-id", "oracle-index", model.ErrCodeDuplicateScanID, submissionCode(ctx, server, token, payload))
 			payload.ScanID = fmt.Sprintf("rq1-%x", randomID())
 			add("pipeline-not-authorized", "oracle-auth", model.ErrCodeUnauthorizedPipeline, submissionCode(ctx, server, "denied", payload))
-			payload.ScanBytes = []byte(`{"descriptor":{"db":{"built":"2000-01-01T00:00:00Z"}}}`)
+			payload.ScanBytes = []byte(staleGrypeScan)
 			_, payload.ClaimedHashes.Scan = verify.ComputeSHA256(payload.ScanBytes)
 			add("stale-scan", "oracle-freshness", model.ErrCodeStaleScan, submissionCode(ctx, server, token, payload))
 
@@ -263,27 +280,59 @@ func TestRQ1IntegrityMatrix(t *testing.T) {
 				add("stale-index", "record-discovery", wantLatest,
 					readWithOlderIndex(ctx, temporaryIndex, network, fixture, sample.RecordID, newer.RecordID))
 			}
-
-			baselines = append(baselines, baselineCase{network: network, fixture: fixture})
 		}
 	}
-	for _, planned := range baselines {
+	for idx, planned := range baselines {
 		fixture, network := planned.fixture, planned.network
-		fingerprints := chain.BaselineHashes{
+		t.Logf("baseline %d/%d: %s %s", idx+1, len(baselines), network.Name(), fixture.App)
+		add := func(scenario, component, want, observed string) {
+			results = append(results, rq1Case{network.Name(), fixture.App, fixture.Version, "baseline", scenario, component, want, observed})
+		}
+		hashes := chain.BaselineHashes{
 			ArtifactHash: "0x" + fixture.Artifact.SHA256, SBOMHash: "0x" + fixture.SBOM.SHA256, ScanHash: "0x" + fixture.Scan.SHA256,
 		}
-		matches, err := writeAndCompareBaseline(ctx, client, baseline, writer, iota, network, fingerprints)
-		if err != nil {
-			matches = err.Error()
+		record := func(hashes chain.BaselineHashes) baselineRead {
+			return writeBaseline(ctx, client, baseline, writer, iota, network, hashes)
 		}
-		results = append(results, rq1Case{
-			network.Name(), fixture.App, fixture.Version, "wrong-version-baseline", "three-hash-baseline", "found", matches,
-		})
-		if err == nil {
-			results = append(results, rq1Case{
-				network.Name(), fixture.App, fixture.Version, "changed-hash-baseline", "three-hash-baseline", "missing", "missing",
-			})
+		recorded := record(hashes)
+		add("valid", "ledger", "found", recorded(ctx, hashes, iota))
+		add("wrong-version", "three-hash-membership", "found", recorded(ctx, hashes, iota))
+		for _, item := range []struct {
+			scenario string
+			file     File
+			hash     *string
+		}{
+			{"artifact-changed", fixture.Artifact, &hashes.ArtifactHash},
+			{"sbom-changed", fixture.SBOM, &hashes.SBOMHash},
+			{"scan-changed", fixture.Scan, &hashes.ScanHash},
+		} {
+			data, err := checkedFile(filepath.Dir(cfg.Manifest), item.file)
+			if err != nil {
+				add(item.scenario, "fixture", "missing", err.Error())
+				continue
+			}
+			altered, _ := alter(data, nil, true, planned.variant)
+			_, computed := verify.ComputeSHA256(altered)
+			expected := *item.hash
+			*item.hash = "0x" + computed
+			add(item.scenario, "three-hash-membership", "missing", recorded(ctx, hashes, iota))
+			*item.hash = expected
 		}
+		if network.Name() == eth.Name() {
+			add("untrusted-signer", "ethereum-contract", "UnauthorizedWriter", baselineUnauthorized(ctx, client, common.HexToAddress(address), hashes))
+		} else {
+			add("untrusted-signer", "iota-policy", "missing", recorded(ctx, hashes, revokedIOTA))
+		}
+		replayHashes := hashes
+		replayID := randomID()
+		replayHashes.ArtifactHash = crypto.Keccak256Hash(replayID[:]).Hex()
+		add("replay-scan-id", "three-hash-ledger-write", "found", record(replayHashes)(ctx, replayHashes, iota))
+		stale := hashes
+		_, staleHash := verify.ComputeSHA256([]byte(staleGrypeScan))
+		stale.ScanHash = "0x" + staleHash
+		add("stale-scan", "three-hash-ledger-write", "found", record(stale)(ctx, stale, iota))
+		add("pipeline-not-authorized", "three-hash-baseline", "not-applicable", "not-applicable")
+		add("stale-index", "three-hash-baseline", "not-applicable", "not-applicable")
 	}
 
 	data, err := json.MarshalIndent(map[string]any{
@@ -297,7 +346,7 @@ func TestRQ1IntegrityMatrix(t *testing.T) {
 	}
 	for _, result := range results {
 		if result.Expected != result.Observed {
-			t.Errorf("%s %s %s: got %q, expected %q", result.Network, result.App, result.Scenario, result.Observed, result.Expected)
+			t.Errorf("%s %s %s %s: got %q, expected %q", result.Network, result.Target, result.App, result.Scenario, result.Observed, result.Expected)
 		}
 	}
 }
@@ -326,82 +375,95 @@ func submissionCode(ctx context.Context, server http.Handler, token string, payl
 	return fmt.Sprintf("HTTP %d", response.Code)
 }
 
-func writeAndCompareBaseline(parent context.Context, client *ethclient.Client, contract *registry.BaselineRegistry,
-	writer *bind.TransactOpts, iota *chain.IOTAAdapter, network chain.Adapter, hashes chain.BaselineHashes) (string, error) {
+type baselineRead func(context.Context, chain.BaselineHashes, *chain.IOTAAdapter) string
+
+func changeHash(hash string) string {
+	replacement := "1"
+	if hash[2] == '1' {
+		replacement = "2"
+	}
+	return hash[:2] + replacement + hash[3:]
+}
+
+func baselineResult(found bool, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	if found {
+		return "found"
+	}
+	return "missing"
+}
+
+func writeBaseline(parent context.Context, client *ethclient.Client, contract *registry.BaselineRegistry,
+	writer *bind.TransactOpts, iota *chain.IOTAAdapter, network chain.Adapter, hashes chain.BaselineHashes) baselineRead {
 	ctx, cancel := context.WithTimeout(parent, 3*time.Minute)
 	defer cancel()
-	changed := hashes
-	replacement := byte('1')
-	if changed.ArtifactHash[2] == replacement {
-		replacement = '2'
+	failed := func(err error) baselineRead {
+		return func(context.Context, chain.BaselineHashes, *chain.IOTAAdapter) string { return err.Error() }
 	}
-	changed.ArtifactHash = changed.ArtifactHash[:2] + string(replacement) + changed.ArtifactHash[3:]
-	var found, altered bool
-	var err error
 	if network.Name() == "ethereum-private" {
-		values := [3][32]byte{}
-		for index, text := range []string{hashes.ArtifactHash, hashes.SBOMHash, hashes.ScanHash} {
-			_, err := hex.Decode(values[index][:], []byte(text[2:]))
-			if err != nil {
-				return "", err
-			}
-		}
 		writer.Context = ctx
-		tx, err := contract.AddHashes(writer, values[0], values[1], values[2])
+		tx, err := contract.AddHashes(writer, common.HexToHash(hashes.ArtifactHash), common.HexToHash(hashes.SBOMHash), common.HexToHash(hashes.ScanHash))
 		if err != nil {
-			return "", err
+			return failed(err)
 		}
 		receipt, err := bind.WaitMined(ctx, client, tx)
 		if err != nil {
-			return "", err
+			return failed(err)
 		}
 		if receipt.Status != types.ReceiptStatusSuccessful {
-			return "", fmt.Errorf("baseline write %s reverted", tx.Hash())
+			return failed(fmt.Errorf("baseline write %s reverted", tx.Hash()))
 		}
-		call := &bind.CallOpts{Context: ctx}
-		found, err = contract.HasHashes(call, values[0], values[1], values[2])
-		if err != nil {
-			return "", err
-		}
-		altered, err = contract.HasHashes(call, common.HexToHash(changed.ArtifactHash), values[1], values[2])
-	} else {
-		receipt, err := iota.WriteBaseline(ctx, hashes)
-		if err != nil {
-			return "", err
-		}
-		read, stop := context.WithTimeout(ctx, 30*time.Second)
-		defer stop()
-		for {
-			found, err = iota.VerifyBaseline(read, receipt.RecordID, hashes)
-			if (err == nil && found) || read.Err() != nil {
-				break
-			}
-			_ = pause(read, time.Second)
-		}
-		if err != nil || !found {
-			return "missing", err
-		}
-		altered, err = iota.VerifyBaseline(ctx, receipt.RecordID, changed)
-		if err != nil {
-			return "", err
+		return func(ctx context.Context, expected chain.BaselineHashes, _ *chain.IOTAAdapter) string {
+			return baselineResult(contract.HasHashes(&bind.CallOpts{Context: ctx}, common.HexToHash(expected.ArtifactHash), common.HexToHash(expected.SBOMHash), common.HexToHash(expected.ScanHash)))
 		}
 	}
+	receipt, err := iota.WriteBaseline(ctx, hashes)
 	if err != nil {
-		return "", err
+		return failed(err)
 	}
-	if altered {
-		return "", fmt.Errorf("baseline accepted a mutated hash")
+	read, stop := context.WithTimeout(ctx, 30*time.Second)
+	defer stop()
+	for {
+		found, err := iota.VerifyBaseline(read, receipt.RecordID, hashes)
+		if err == nil && found {
+			break
+		}
+		if pause(read, time.Second) != nil {
+			return failed(fmt.Errorf("baseline object %s unavailable: %s", receipt.RecordID, baselineResult(found, err)))
+		}
 	}
-	if !found {
-		return "missing", nil
+	return func(ctx context.Context, expected chain.BaselineHashes, reader *chain.IOTAAdapter) string {
+		return baselineResult(reader.VerifyBaseline(ctx, receipt.RecordID, expected))
 	}
-	return "found", nil
 }
 
-func ethereumReplay(ctx context.Context, adapter *chain.EthereumAdapter, fixture Fixture, scanID string) string {
+func baselineUnauthorized(ctx context.Context, client *ethclient.Client, address common.Address, hashes chain.BaselineHashes) string {
+	abi, err := registry.BaselineRegistryMetaData.GetAbi()
+	if err != nil {
+		return err.Error()
+	}
+	data, err := abi.Pack("addHashes", common.HexToHash(hashes.ArtifactHash), common.HexToHash(hashes.SBOMHash), common.HexToHash(hashes.ScanHash))
+	if err != nil {
+		return err.Error()
+	}
+	_, err = client.CallContract(ctx, ethereum.CallMsg{From: common.BytesToAddress([]byte{1}), To: &address, Data: data}, nil)
+	if err == nil {
+		return "accepted"
+	}
+	raw, ok := ethclient.RevertErrorData(err)
+	rule := abi.Errors["UnauthorizedWriter"]
+	if ok && len(raw) >= 4 && bytes.Equal(raw[:4], rule.ID[:4]) {
+		return rule.Name
+	}
+	return err.Error()
+}
+
+func ethereumDirectWrite(ctx context.Context, adapter *chain.EthereumAdapter, fixture Fixture, scanID, expectedRule string) string {
 	_, err := adapter.WriteRecord(ctx, chain.Record{
 		Network: adapter.Name(), App: fixture.App, Version: fixture.Version, ScanID: scanID,
-		ArtifactHash: common.HexToHash(fixture.Artifact.SHA256),
+		ArtifactHash: common.HexToHash(changeHash("0x" + fixture.Artifact.SHA256)),
 		SBOMHash:     common.HexToHash(fixture.SBOM.SHA256), ScanHash: common.HexToHash(fixture.Scan.SHA256),
 	})
 	if err == nil {
@@ -415,7 +477,7 @@ func ethereumReplay(ctx context.Context, adapter *chain.EthereumAdapter, fixture
 	if err != nil {
 		return err.Error()
 	}
-	rule := abi.Errors["ScanIdAlreadyUsed"]
+	rule := abi.Errors[expectedRule]
 	if bytes.Equal(revert[:4], rule.ID[:4]) {
 		return rule.Name
 	}
@@ -461,31 +523,32 @@ func readWithOlderIndex(ctx context.Context, db *sql.DB, network chain.Adapter, 
 
 func verifyAfterRevocation(ctx context.Context, client *ethclient.Client, contract *registry.AttestationRegistry,
 	admin *bind.TransactOpts, signer common.Address, engine *verify.Engine, network chain.Adapter,
-	request model.VerifyRequest) (string, error) {
+	request model.VerifyRequest, tryWrite func(context.Context) string) (string, string, error) {
 	revokeCtx, stop := context.WithTimeout(ctx, time.Minute)
 	defer stop()
 	admin.Context = revokeCtx
 	revoke, err := contract.RevokeOracle(admin, signer)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	revoked, err := bind.WaitMined(revokeCtx, client, revoke)
 	if err != nil || revoked.Status != types.ReceiptStatusSuccessful {
-		return "", fmt.Errorf("oracle revocation %s was not confirmed: %v", revoke.Hash(), err)
+		return "", "", fmt.Errorf("oracle revocation %s was not confirmed: %v", revoke.Hash(), err)
 	}
 	observed := integrityResult(revokeCtx, engine, network, request)
+	write := tryWrite(revokeCtx)
 	restoreCtx, done := context.WithTimeout(context.Background(), time.Minute)
 	defer done()
 	admin.Context = restoreCtx
 	restore, err := contract.AuthorizeOracle(admin, signer)
 	if err != nil {
-		return "", fmt.Errorf("restore benchmark oracle permission: %w", err)
+		return "", "", fmt.Errorf("restore benchmark oracle permission: %w", err)
 	}
 	receipt, err := bind.WaitMined(restoreCtx, client, restore)
 	if err != nil || receipt.Status != types.ReceiptStatusSuccessful {
-		return "", fmt.Errorf("restore benchmark oracle permission %s was not confirmed: %v", restore.Hash(), err)
+		return "", "", fmt.Errorf("restore benchmark oracle permission %s was not confirmed: %v", restore.Hash(), err)
 	}
-	return observed, nil
+	return observed, write, nil
 }
 
 func iotaReplay(ctx context.Context, adapter *chain.IOTAAdapter, index *store.SQLiteIndex, fixture Fixture, scanID string) string {
