@@ -58,7 +58,10 @@ jobs:
           set -euo pipefail
           scan_input="$(mktemp -d "$RUNNER_TEMP/scan-input.XXXXXX")"
           tar -xzf "$ATTESTATION_ARCHIVE" -C "$scan_input"
-          syft "dir:$scan_input/package" -o "cyclonedx-json=$RUNNER_TEMP/sbom.json"
+          app="$(jq -er .name "$scan_input/package/package.json")"
+          version="$(jq -er .version "$scan_input/package/package.json")"
+          syft "dir:$scan_input/package" --select-catalogers "+javascript-package-cataloger" \
+            --source-name "$app" --source-version "$version" -o "cyclonedx-json=$RUNNER_TEMP/sbom.json"
           grype "sbom:$RUNNER_TEMP/sbom.json" -o json > "$RUNNER_TEMP/scan.json"
       - name: Submit attestation
         run: node scripts/submit-attestation.mjs examples/attestation-demo/package.json "$ATTESTATION_ARCHIVE" "$RUNNER_TEMP/sbom.json" "$RUNNER_TEMP/scan.json"
