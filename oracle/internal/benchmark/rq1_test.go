@@ -71,10 +71,6 @@ func (s alteredPackage) FetchArtifact(ctx context.Context, app, version string) 
 	return alter(data, err, s.changed)
 }
 
-type revokedSigner struct{ chain.Adapter }
-
-func (revokedSigner) IsSignerAuthorized(context.Context, string) (bool, error) { return false, nil }
-
 func TestRQ1IntegrityMatrix(t *testing.T) {
 	configPath := os.Getenv("ATTESTATION_RQ1_CONFIG")
 	if configPath == "" {
@@ -127,6 +123,21 @@ func TestRQ1IntegrityMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	revokedIOTA, err := chain.NewIOTAAdapter(ctx, os.Getenv("IOTA_SERVICE_URL"), os.Getenv("IOTA_SERVICE_TOKEN"),
+		[]string{"0x" + strings.Repeat("0", 64)}, index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside, err := store.NewSQLiteIndex(filepath.Join(t.TempDir(), "outside-application.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outside.Close()
+	directIOTA, err := chain.NewIOTAAdapter(ctx, os.Getenv("IOTA_SERVICE_URL"), os.Getenv("IOTA_SERVICE_TOKEN"),
+		strings.Split(os.Getenv("IOTA_TRUSTED_SIGNERS"), ","), outside)
+	if err != nil {
+		t.Fatal(err)
+	}
 	blobs, err := store.NewS3Store(ctx, store.S3Config{
 		Endpoint: os.Getenv("RUSTFS_ENDPOINT"), AccessKey: os.Getenv("RUSTFS_ACCESS_KEY"),
 		SecretKey: os.Getenv("RUSTFS_SECRET_KEY"),
@@ -155,6 +166,22 @@ func TestRQ1IntegrityMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	adminKey, err := crypto.HexToECDSA(strings.TrimPrefix(os.Getenv("ETHEREUM_ADMIN_PRIVATE_KEY"), "0x"))
+	if err != nil {
+		t.Fatal("set a private Geth administrator key for the dedicated benchmark registry")
+	}
+	admin, err := bind.NewKeyedTransactorWithChainID(adminKey, big.NewInt(1337))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullRegistry, err := registry.NewAttestationRegistry(eth.ContractAddress(), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := fullRegistry.Admin(&bind.CallOpts{Context: ctx})
+	if err != nil || owner != admin.From {
+		t.Fatalf("benchmark account is not the registry administrator: %v", err)
+	}
 	router := chain.NewRouter()
 	router.Register(eth)
 	router.Register(iota)
@@ -164,6 +191,11 @@ func TestRQ1IntegrityMatrix(t *testing.T) {
 		AuthorizePipeline: func(_ context.Context, candidate, _ string) bool { return candidate == token }})
 	start := time.Now().UTC()
 	var results []rq1Case
+	type baselineCase struct {
+		network chain.Adapter
+		fixture Fixture
+	}
+	var baselines []baselineCase
 	for _, fixture := range dataset.Fixtures {
 		for _, network := range []chain.Adapter{eth, iota} {
 			add := func(scenario, component, want, observed string) {
@@ -190,8 +222,16 @@ func TestRQ1IntegrityMatrix(t *testing.T) {
 			add("wrong-version", "record-binding", model.StatusRecordNotFound, integrityResult(ctx, engine, network, otherVersion))
 			if network.Name() == eth.Name() {
 				add("direct-replay", "ethereum-contract", "ScanIdAlreadyUsed", ethereumReplay(ctx, directETH, fixture, sample.ScanID))
+				observed, err := verifyAfterRevocation(ctx, client, fullRegistry, admin, writer.From, engine, eth, request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				add("untrusted-signer", "ethereum-contract", model.StatusUntrustedSigner, observed)
+			} else {
+				add("direct-replay", "iota-ledger-with-separate-index", "accepted",
+					iotaReplay(ctx, directIOTA, outside, fixture, sample.ScanID))
+				add("untrusted-signer", "iota-policy", model.StatusUntrustedSigner, integrityResult(ctx, engine, revokedIOTA, request))
 			}
-			add("untrusted-signer", "verifier-policy", model.StatusUntrustedSigner, integrityResult(ctx, engine, revokedSigner{network}, request))
 
 			sbom, err := checkedFile(filepath.Dir(cfg.Manifest), fixture.SBOM)
 			if err != nil {
@@ -224,18 +264,28 @@ func TestRQ1IntegrityMatrix(t *testing.T) {
 					readWithOlderIndex(ctx, temporaryIndex, network, fixture, sample.RecordID, newer.RecordID))
 			}
 
-			fingerprints := chain.BaselineHashes{
-				ArtifactHash: "0x" + fixture.Artifact.SHA256, SBOMHash: "0x" + fixture.SBOM.SHA256, ScanHash: "0x" + fixture.Scan.SHA256,
-			}
-			matches, err := writeAndCompareBaseline(ctx, client, baseline, writer, iota, network, fingerprints)
-			if err != nil {
-				add("wrong-version-baseline", "three-hash-baseline", "found", err.Error())
-			} else {
-				add("wrong-version-baseline", "three-hash-baseline", "found", matches)
-				add("changed-hash-baseline", "three-hash-baseline", "missing", "missing")
-			}
+			baselines = append(baselines, baselineCase{network: network, fixture: fixture})
 		}
 	}
+	for _, planned := range baselines {
+		fixture, network := planned.fixture, planned.network
+		fingerprints := chain.BaselineHashes{
+			ArtifactHash: "0x" + fixture.Artifact.SHA256, SBOMHash: "0x" + fixture.SBOM.SHA256, ScanHash: "0x" + fixture.Scan.SHA256,
+		}
+		matches, err := writeAndCompareBaseline(ctx, client, baseline, writer, iota, network, fingerprints)
+		if err != nil {
+			matches = err.Error()
+		}
+		results = append(results, rq1Case{
+			network.Name(), fixture.App, fixture.Version, "wrong-version-baseline", "three-hash-baseline", "found", matches,
+		})
+		if err == nil {
+			results = append(results, rq1Case{
+				network.Name(), fixture.App, fixture.Version, "changed-hash-baseline", "three-hash-baseline", "missing", "missing",
+			})
+		}
+	}
+
 	data, err := json.MarshalIndent(map[string]any{
 		"schemaVersion": 1, "dataset": cfg.Manifest, "startedAt": start, "finishedAt": time.Now().UTC(), "results": results,
 	}, "", "  ")
@@ -319,9 +369,17 @@ func writeAndCompareBaseline(parent context.Context, client *ethclient.Client, c
 		if err != nil {
 			return "", err
 		}
-		found, err = iota.VerifyBaseline(ctx, receipt.RecordID, hashes)
-		if err != nil {
-			return "", err
+		read, stop := context.WithTimeout(ctx, 30*time.Second)
+		defer stop()
+		for {
+			found, err = iota.VerifyBaseline(read, receipt.RecordID, hashes)
+			if (err == nil && found) || read.Err() != nil {
+				break
+			}
+			_ = pause(read, time.Second)
+		}
+		if err != nil || !found {
+			return "missing", err
 		}
 		altered, err = iota.VerifyBaseline(ctx, receipt.RecordID, changed)
 		if err != nil {
@@ -399,4 +457,58 @@ func readWithOlderIndex(ctx context.Context, db *sql.DB, network chain.Adapter, 
 	default:
 		return "unexpected-record"
 	}
+}
+
+func verifyAfterRevocation(ctx context.Context, client *ethclient.Client, contract *registry.AttestationRegistry,
+	admin *bind.TransactOpts, signer common.Address, engine *verify.Engine, network chain.Adapter,
+	request model.VerifyRequest) (string, error) {
+	revokeCtx, stop := context.WithTimeout(ctx, time.Minute)
+	defer stop()
+	admin.Context = revokeCtx
+	revoke, err := contract.RevokeOracle(admin, signer)
+	if err != nil {
+		return "", err
+	}
+	revoked, err := bind.WaitMined(revokeCtx, client, revoke)
+	if err != nil || revoked.Status != types.ReceiptStatusSuccessful {
+		return "", fmt.Errorf("oracle revocation %s was not confirmed: %v", revoke.Hash(), err)
+	}
+	observed := integrityResult(revokeCtx, engine, network, request)
+	restoreCtx, done := context.WithTimeout(context.Background(), time.Minute)
+	defer done()
+	admin.Context = restoreCtx
+	restore, err := contract.AuthorizeOracle(admin, signer)
+	if err != nil {
+		return "", fmt.Errorf("restore benchmark oracle permission: %w", err)
+	}
+	receipt, err := bind.WaitMined(restoreCtx, client, restore)
+	if err != nil || receipt.Status != types.ReceiptStatusSuccessful {
+		return "", fmt.Errorf("restore benchmark oracle permission %s was not confirmed: %v", restore.Hash(), err)
+	}
+	return observed, nil
+}
+
+func iotaReplay(ctx context.Context, adapter *chain.IOTAAdapter, index *store.SQLiteIndex, fixture Fixture, scanID string) string {
+	record := store.AttestationRecord{Network: adapter.Name(), App: fixture.App, Version: fixture.Version, ScanID: scanID,
+		ArtifactHash: strings.Repeat("1", 64), SBOMHash: fixture.SBOM.SHA256, ScanHash: fixture.Scan.SHA256,
+		SubmittedAt: time.Now().UTC(), Status: "pending"}
+	if err := index.Save(ctx, record); err != nil {
+		return err.Error()
+	}
+	receipt, err := adapter.WriteRecord(ctx, chain.Record{Network: adapter.Name(), App: fixture.App, Version: fixture.Version, ScanID: scanID,
+		ArtifactHash: common.HexToHash(record.ArtifactHash),
+		SBOMHash:     common.HexToHash(record.SBOMHash), ScanHash: common.HexToHash(record.ScanHash)})
+	if err != nil {
+		return err.Error()
+	}
+	wait, cancel := context.WithTimeout(ctx, 40*time.Second)
+	defer cancel()
+	for wait.Err() == nil {
+		finalized, err := adapter.ReadReceipt(wait, receipt.RecordID)
+		if err == nil && finalized.FinalizedAt != nil {
+			return "accepted"
+		}
+		_ = pause(wait, time.Second)
+	}
+	return "checkpoint-unavailable"
 }

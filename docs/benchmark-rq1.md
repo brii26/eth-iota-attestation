@@ -5,7 +5,8 @@ with at least ten published package and version variations. Use a dedicated
 private Geth registry, a deployed [three-hash baseline](baseline.md), and a
 separate funded IOTA account. Configure the development networks and
 storage with the variables in [the oracle configuration](../oracle/.env.example).
-Set `BASELINE_ETHEREUM_CONTRACT` to the baseline registry address.
+Set `BASELINE_ETHEREUM_CONTRACT` to the baseline registry address and supply
+the private Geth administrator key through `ETHEREUM_ADMIN_PRIVATE_KEY`.
 
 Save the filename of the published manifest and the desired JSON output in
 a local configuration file.
@@ -31,6 +32,7 @@ before returning a failing test.
 
 The stale-index check changes the order in a temporary SQLite database
 and compares ledger discovery against a known older and newer record.
-The signer scenario exercises verifier classification with a deny policy.
-Live oracle permission changes and direct IOTA duplicate writes are
-separate scenarios still tracked in issue #17.
+The signer scenario removes and restores the private Geth oracle permission
+and checks an alternate signer policy on IOTA. The replay scenario uses a
+separate temporary index to measure what the IOTA ledger accepts outside
+the original application index.
