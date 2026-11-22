@@ -4,6 +4,7 @@ import { history, networks, statusText, verify } from "./api";
 import type { History, Selection, Verification } from "./api";
 import { compareWithRegistry } from "./ethereum";
 import { Button } from "./components/ui/button";
+import { Wallet } from "./Wallet";
 
 const networkNames: Record<string, string> = {
   "ethereum-private": "Private Ethereum",
@@ -191,6 +192,8 @@ export function App() {
         </div>
       </section>}
       {result && <Result result={result} comparison={comparison} />}
+      {draft.network.startsWith("ethereum-") && <Wallet key={draft.network} network={draft.network}
+        recordId={selection?.network === draft.network ? selectedId || result?.recordId : undefined} />}
     </main>
   );
 }

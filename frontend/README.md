@@ -16,3 +16,13 @@ shows the integrity checks, scan freshness, and the independent Ethereum read.
 
 `npm run build` creates `dist/`. For deployment, serve that directory and
 forward `/api/` on the same origin to the oracle.
+
+## MetaMask
+
+Select an Ethereum network and click **Connect MetaMask**. The dashboard asks
+the wallet to switch to the expected chain and offers the private Geth network
+configuration when necessary. The registry administrator can authorize or
+revoke an oracle by address. Any account on the selected network can request
+verification of a selected record or the latest verified record. The
+dashboard reads the request ID from the mined transaction and polls for the
+oracle's result.
