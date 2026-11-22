@@ -19,8 +19,8 @@ type AttestationRequest struct {
 	Version       string          `json:"version"`
 	ScanID        string          `json:"scanId"`
 	ClaimedHashes ClaimedHashes   `json:"claimedHashes"`
-	SBOM          json.RawMessage `json:"sbom"`
-	Scan          json.RawMessage `json:"scan"`
+	SBOM          json.RawMessage `json:"sbom,omitempty"`
+	Scan          json.RawMessage `json:"scan,omitempty"`
 	SBOMBytes     []byte          `json:"sbomBase64,omitempty"`
 	ScanBytes     []byte          `json:"scanBase64,omitempty"`
 }
