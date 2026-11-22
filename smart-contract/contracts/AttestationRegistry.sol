@@ -135,9 +135,12 @@ contract AttestationRegistry {
         bytes32 sbomHash,
         bytes32 scanHash
     ) external onlyOracle returns (uint256 recordId) {
-        _validateString(app, "app", MAX_APP_BYTES);
-        _validateString(version, "version", MAX_VERSION_BYTES);
-        _validateString(scanId, "scanId", MAX_SCAN_ID_BYTES);
+        if (bytes(app).length == 0) revert EmptyField("app");
+        if (bytes(app).length > MAX_APP_BYTES) revert StringTooLong("app", bytes(app).length, MAX_APP_BYTES);
+        if (bytes(version).length == 0) revert EmptyField("version");
+        if (bytes(version).length > MAX_VERSION_BYTES) revert StringTooLong("version", bytes(version).length, MAX_VERSION_BYTES);
+        if (bytes(scanId).length == 0) revert EmptyField("scanId");
+        if (bytes(scanId).length > MAX_SCAN_ID_BYTES) revert StringTooLong("scanId", bytes(scanId).length, MAX_SCAN_ID_BYTES);
         if (artifactHash == bytes32(0)) revert EmptyHash("artifactHash");
         if (sbomHash == bytes32(0)) revert EmptyHash("sbomHash");
         if (scanHash == bytes32(0)) revert EmptyHash("scanHash");
@@ -147,16 +150,17 @@ contract AttestationRegistry {
         bytes32 appVersionKey = _appVersionKey(app, version);
 
         recordId = ++recordCount;
-        records[recordId] = Record({
-            app: app,
-            version: version,
-            scanId: scanId,
-            artifactHash: artifactHash,
-            sbomHash: sbomHash,
-            scanHash: scanHash,
-            signer: msg.sender,
-            timestamp: block.timestamp
-        });
+        {
+            Record storage stored = records[recordId];
+            stored.app = app;
+            stored.version = version;
+            stored.scanId = scanId;
+            stored.artifactHash = artifactHash;
+            stored.sbomHash = sbomHash;
+            stored.scanHash = scanHash;
+            stored.signer = msg.sender;
+            stored.timestamp = block.timestamp;
+        }
         usedScanIds[scanIdKey] = true;
         recordIdsByAppVersion[appVersionKey].push(recordId);
 
@@ -238,12 +242,6 @@ contract AttestationRegistry {
 
     function _appVersionKey(string calldata app, string calldata version) private pure returns (bytes32) {
         return keccak256(abi.encode(app, version));
-    }
-
-    function _validateString(string calldata value, string memory field, uint256 maximum) private pure {
-        uint256 length = bytes(value).length;
-        if (length == 0) revert EmptyField(field);
-        if (length > maximum) revert StringTooLong(field, length, maximum);
     }
 
     function _requireRecord(uint256 recordId) private view {
