@@ -11,13 +11,14 @@ import (
 type grypeReport struct {
 	Descriptor struct {
 		DB struct {
-			Built string `json:"built"`
+			Built  string          `json:"built"`
+			Status json.RawMessage `json:"status"`
 		} `json:"db"`
 	} `json:"descriptor"`
 }
 
 // ErrMissingDBTimestamp is returned when the scan payload lacks the descriptor.db.built field.
-var ErrMissingDBTimestamp = errors.New("missing descriptor.db.built in Grype scan")
+var ErrMissingDBTimestamp = errors.New("missing database build timestamp in Grype scan")
 
 // ErrStaleScan is returned when the Grype DB build timestamp is older than maxAge.
 var ErrStaleScan = errors.New("vulnerability database is stale")
@@ -29,7 +30,23 @@ func ValidateGrypeFreshness(scanBytes []byte, maxAge time.Duration, now time.Tim
 		return time.Time{}, fmt.Errorf("unmarshal Grype scan: %w", err)
 	}
 
-	builtStr := report.Descriptor.DB.Built
+	db := report.Descriptor.DB
+	builtStr := db.Built
+	if len(db.Status) > 0 && db.Status[0] == '{' {
+		var status struct {
+			Built string `json:"built"`
+			Valid *bool  `json:"valid"`
+		}
+		if err := json.Unmarshal(db.Status, &status); err != nil {
+			return time.Time{}, fmt.Errorf("decode Grype database status: %w", err)
+		}
+		if status.Valid != nil && !*status.Valid {
+			return time.Time{}, errors.New("Grype database status is invalid")
+		}
+		if status.Built != "" {
+			builtStr = status.Built
+		}
+	}
 	if builtStr == "" {
 		return time.Time{}, ErrMissingDBTimestamp
 	}
