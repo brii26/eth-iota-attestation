@@ -67,6 +67,7 @@ type IOTAReceipt struct {
 	GasStorage     string     `json:"gasStorage"`
 	GasRebate      string     `json:"gasRebate"`
 	TxSize         uint64     `json:"txSize"`
+	RecordBytes    int        `json:"recordBytes"`
 }
 
 func (s *SQLiteIndex) SaveIOTAReceipt(ctx context.Context, record AttestationRecord, receipt IOTAReceipt) error {
