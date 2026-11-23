@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,6 +20,8 @@ import (
 	"github.com/brii26/eth-iota-attestation/oracle/internal/model"
 	"github.com/brii26/eth-iota-attestation/oracle/internal/store"
 	"github.com/brii26/eth-iota-attestation/oracle/internal/verify"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 func TestLocalReleaseRoundTrip(t *testing.T) {
@@ -85,10 +88,18 @@ func TestLocalReleaseRoundTrip(t *testing.T) {
 	scanID := fmt.Sprintf("release-smoke-%x", id)
 	token := fmt.Sprintf("test-pipeline-%x", id)
 	source := verify.NewVerdaccioClient(os.Getenv("VERDACCIO_URL"))
-	server := NewServer(Config{S3Store: blob, ChainAdapter: adapter, Index: index, VerdaccioClient: source,
+	config := Config{S3Store: blob, ChainAdapter: adapter, Index: index, VerdaccioClient: source,
 		AuthorizePipeline: func(_ context.Context, candidate, name string) bool {
 			return candidate == token && name == app
-		}})
+		}}
+	ipfsURL := os.Getenv("ATTESTATION_SMOKE_IPFS_KUBO_URL")
+	if ipfsURL != "" {
+		config.IPFSSBOM, err = store.NewIPFSSBOMStore(blob, index, ipfsURL, app)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := NewServer(config)
 	post := func(path string, data any, want ...int) *httptest.ResponseRecorder {
 		t.Helper()
 		body, err := json.Marshal(data)
@@ -104,11 +115,12 @@ func TestLocalReleaseRoundTrip(t *testing.T) {
 		}
 		return response
 	}
-	response := post("/api/v1/attestations", model.AttestationRequest{
+	attestation := model.AttestationRequest{
 		Network: adapter.Name(), App: app, Version: version, ScanID: scanID,
 		ClaimedHashes: model.ClaimedHashes{Artifact: hashes[0], SBOM: hashes[1], Scan: hashes[2]},
 		SBOMBytes:     files[1], ScanBytes: files[2],
-	}, http.StatusCreated, http.StatusAccepted)
+	}
+	response := post("/api/v1/attestations", attestation, http.StatusCreated, http.StatusAccepted)
 	var attested model.AttestationStatus
 	if err := json.Unmarshal(response.Body.Bytes(), &attested); err != nil || attested.TxRef == "" {
 		t.Fatalf("missing transaction reference: %+v, %v", attested, err)
@@ -163,4 +175,53 @@ func TestLocalReleaseRoundTrip(t *testing.T) {
 		t.Fatalf("release verification failed: %+v", verified)
 	}
 	t.Logf("verified %s@%s on %s in transaction %s", app, version, adapter.Name(), attested.TxRef)
+	if ipfsURL == "" {
+		return
+	}
+
+	endpoint, err := url.Parse(os.Getenv("RUSTFS_ENDPOINT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := minio.New(endpoint.Host, &minio.Options{
+		Creds:  credentials.NewStaticV4(os.Getenv("RUSTFS_ACCESS_KEY"), os.Getenv("RUSTFS_SECRET_KEY"), ""),
+		Secure: endpoint.Scheme == "https",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := fmt.Sprintf("%s/%s/%s/%s.json", adapter.Name(), app, version, scanID)
+	if err := client.RemoveObject(ctx, store.BucketSBOMs, key, minio.RemoveObjectOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	readBack, err := config.IPFSSBOM.GetSBOM(ctx, key)
+	if err != nil || !bytes.Equal(readBack, files[1]) {
+		t.Fatalf("IPFS did not return the original SBOM: %v", err)
+	}
+	request := model.VerifyRequest{Network: adapter.Name(), App: app, Version: version, RecordID: attested.RecordID}
+	verifyStatus := func(want string) {
+		t.Helper()
+		response := post("/api/v1/verify", request, http.StatusOK)
+		var result model.VerifyResponse
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Status != want {
+			t.Fatalf("wanted %s, got %q: %v", want, result.Status, err)
+		}
+	}
+	verifyStatus(model.StatusValid)
+	unavailable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer unavailable.Close()
+	config.IPFSSBOM, err = store.NewIPFSSBOMStore(blob, index, unavailable.URL, app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server = NewServer(config)
+	verifyStatus(model.StatusFileUnavailable)
+	attestation.ScanID += "-no-pin"
+	response = post("/api/v1/attestations", attestation, http.StatusCreated, http.StatusAccepted)
+	if err := json.Unmarshal(response.Body.Bytes(), &attested); err != nil || attested.TxRef == "" {
+		t.Fatalf("unavailable IPFS blocked the write: %+v, %v", attested, err)
+	}
+	t.Log("verified IPFS fallback, unavailable sources, and non-blocking pin failure")
 }
