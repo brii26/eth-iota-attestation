@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { createWalletClient, custom, isAddress, parseAbi, parseEventLogs, zeroAddress } from "viem";
 import type { Address, EIP1193Provider, Hash } from "viem";
 import { ethereumNetwork } from "./ethereum";
+import { Badges, configuredBadge } from "./Badges";
 import { Button } from "./components/ui/button";
 
 const operationsABI = parseAbi([
@@ -41,6 +42,7 @@ function walletErrorCode(error: unknown) {
 
 export function Wallet({ network, recordId }: { network: string; recordId?: string }) {
   const target = useMemo(() => ethereumNetwork(network), [network]);
+  const badge = configuredBadge(network);
   const [provider, setProvider] = useState<MetaMaskProvider>();
   const [account, setAccount] = useState<Address>();
   const [oracle, setOracle] = useState("");
@@ -196,6 +198,7 @@ export function Wallet({ network, recordId }: { network: string; recordId?: stri
         </form>
         <Button variant="secondary" disabled={busy || !recordId} onClick={() => send("requestVerification")}>Request on-chain verification</Button>
       </>}
+      {account && target && badge && <Badges key={`${network}:${account}`} target={target} address={badge} account={account} />}
       {state && <p className={state.phase === "failed" ? "notice" : ""} role={state.phase === "failed" ? "alert" : "status"}>
         {state.message}{state.hash && <><br /><span className="hash">{state.hash}</span></>}
       </p>}

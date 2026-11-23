@@ -184,8 +184,18 @@ func main() {
 		if strings.HasPrefix(netName, "ethereum-") {
 			ad, err := router.Get(netName)
 			if err == nil {
+				var mintBadge chain.BadgeMinter
 				if ethereum, ok := ad.(*chain.EthereumAdapter); ok {
 					go reconcile(workerCtx, netName, ethereum.Reconcile)
+					configKey := strings.ToUpper(strings.ReplaceAll(netName, "-", "_")) + "_BADGE_CONTRACT_ADDRESS"
+					if address := os.Getenv(configKey); address != "" {
+						badgeCtx, cancel := context.WithTimeout(workerCtx, 10*time.Second)
+						mintBadge, err = ethereum.BadgeMinter(badgeCtx, address)
+						cancel()
+						if err != nil {
+							log.Printf("Badge issuance unavailable on %s: %v", netName, err)
+						}
+					}
 				}
 				w := listener.NewWorker(listener.Config{
 					Adapter:      ad,
@@ -193,6 +203,7 @@ func main() {
 					Index:        idx,
 					Network:      netName,
 					PollInterval: 3 * time.Second,
+					MintBadge:    mintBadge,
 				})
 				go w.Start(workerCtx)
 				log.Printf("Started on-chain verification listener for network: %s", netName)

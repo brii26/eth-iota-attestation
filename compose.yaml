@@ -89,6 +89,7 @@ services:
         condition: service_healthy
     environment:
       ETHEREUM_PRIVATE_RPC_URL: http://geth:8545
+      ETHEREUM_PRIVATE_BADGE_CONTRACT_ADDRESS: ${ETHEREUM_PRIVATE_BADGE_CONTRACT_ADDRESS:-}
       RUSTFS_ENDPOINT: http://rustfs:9000
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsdevpassword123}
@@ -114,6 +115,8 @@ services:
     build:
       context: .
       dockerfile: docker/frontend/Dockerfile
+      args:
+        VITE_PRIVATE_BADGE_CONTRACT_ADDRESS: ${ETHEREUM_PRIVATE_BADGE_CONTRACT_ADDRESS:-}
     depends_on:
       oracle:
         condition: service_healthy

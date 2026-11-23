@@ -112,6 +112,14 @@ func NewSQLiteIndex(dbPath string) (*SQLiteIndex, error) {
 		last_block INTEGER NOT NULL
 	);
 
+	CREATE TABLE IF NOT EXISTS pending_badges (
+		network TEXT NOT NULL,
+		recipient TEXT NOT NULL,
+		record_id TEXT NOT NULL,
+		next_attempt DATETIME NOT NULL,
+		PRIMARY KEY(network, recipient, record_id)
+	);
+
 	CREATE TABLE IF NOT EXISTS fulfilled_verifications (
 		network TEXT NOT NULL,
 		request_id TEXT NOT NULL,
@@ -334,7 +342,7 @@ func (s *SQLiteIndex) IsVerificationFulfilled(ctx context.Context, network, requ
 }
 
 // RecordFulfilledVerification records a fulfilled verification request.
-func (s *SQLiteIndex) RecordFulfilledVerification(ctx context.Context, network, requestID, recordID string, status uint8, stale bool, txRef string) error {
+func (s *SQLiteIndex) RecordFulfilledVerification(ctx context.Context, network, requestID, recordID string, status uint8, stale bool, txRef, badgeRecipient string) error {
 	staleInt := 0
 	if stale {
 		staleInt = 1
@@ -344,11 +352,24 @@ func (s *SQLiteIndex) RecordFulfilledVerification(ctx context.Context, network, 
 		network, request_id, record_id, status, stale, tx_ref, fulfilled_at
 	) VALUES (?, ?, ?, ?, ?, ?, ?)
 	`
-	_, err := s.db.ExecContext(ctx, query, network, requestID, recordID, status, staleInt, txRef, time.Now().UTC())
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, query, network, requestID, recordID, status, staleInt, txRef, now); err != nil {
 		return fmt.Errorf("insert fulfilled verification: %w", err)
 	}
-	return nil
+	if badgeRecipient != "" {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO pending_badges (network, recipient, record_id, next_attempt)
+			VALUES (?, ?, ?, ?) ON CONFLICT(network, recipient, record_id) DO NOTHING`,
+			network, badgeRecipient, recordID, now); err != nil {
+			return fmt.Errorf("queue verification badge: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 // Close closes the underlying SQLite database connection.

@@ -100,8 +100,13 @@ func TestSQLiteIndex(t *testing.T) {
 		t.Fatalf("expected req-1 not fulfilled, got %v, err=%v", fulfilled, err)
 	}
 
-	if err := idx.RecordFulfilledVerification(ctx, rec.Network, "req-1", "rec-42", 1, false, "0xtx"); err != nil {
+	if err := idx.RecordFulfilledVerification(ctx, rec.Network, "req-1", "rec-42", 1, false, "0xtx", "0xrecipient"); err != nil {
 		t.Fatalf("failed to record fulfilled verification: %v", err)
+	}
+
+	job, err := idx.NextBadge(ctx, rec.Network)
+	if err != nil || job == nil || job.Recipient != "0xrecipient" || job.RecordID != "rec-42" {
+		t.Fatalf("expected queued badge for fulfilled record, got %+v, err=%v", job, err)
 	}
 
 	fulfilled, err = idx.IsVerificationFulfilled(ctx, rec.Network, "req-1")

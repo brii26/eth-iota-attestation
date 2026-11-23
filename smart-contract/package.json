@@ -15,5 +15,8 @@
     "hardhat": "^3.21.2",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "5.7.0"
   }
 }

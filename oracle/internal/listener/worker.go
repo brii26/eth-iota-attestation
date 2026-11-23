@@ -3,6 +3,7 @@ package listener
 import (
 	"context"
 	"fmt"
+	"log"
 	"math/big"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 	"github.com/brii26/eth-iota-attestation/oracle/internal/verify"
 )
 
+const integrityValid uint8 = 1
+
 // StatusToIntegrityStatus maps domain status string to contract IntegrityStatus enum value.
 // Solidity IntegrityStatus:
 // 0: Pending, 1: Valid, 2: ArtifactMismatch, 3: SbomMismatch, 4: ScanMismatch,
@@ -19,7 +22,7 @@ import (
 func StatusToIntegrityStatus(statusStr string, isStale bool) (uint8, bool) {
 	switch statusStr {
 	case model.StatusValid:
-		return 1, isStale
+		return integrityValid, isStale
 	case model.StatusArtifactMismatch:
 		return 2, false
 	case model.StatusSBOMMismatch:
@@ -47,6 +50,7 @@ type Config struct {
 	StartBlock   uint64
 	MaxRetries   int
 	RetryBackoff time.Duration
+	MintBadge    chain.BadgeMinter
 }
 
 // Worker continuously polls for VerificationRequested events and fulfills them on-chain.
@@ -73,6 +77,9 @@ func NewWorker(cfg Config) *Worker {
 // PollOnce checks for new VerificationRequested events since last processed block,
 // verifies their records, and fulfills them on-chain.
 func (w *Worker) PollOnce(ctx context.Context) (int, error) {
+	if w.cfg.MintBadge != nil {
+		defer w.issueBadge(ctx)
+	}
 	// 1. Recover last processed block
 	lastBlock, err := w.cfg.Index.GetLastProcessedBlock(ctx, w.cfg.Network)
 	if err != nil {
@@ -119,28 +126,16 @@ func (w *Worker) PollOnce(ctx context.Context) (int, error) {
 			recordIDStr = ev.RecordID.String()
 		}
 
-		resp, err := w.cfg.Engine.Verify(ctx, w.cfg.Adapter, model.VerifyRequest{
-			Network:  w.cfg.Network,
-			RecordID: recordIDStr,
-		})
+		result, txRef, err := w.fulfillEvent(ctx, ev.RequestID, recordIDStr)
 		if err != nil {
-			return processedCount, fmt.Errorf("verify record %s: %w", recordIDStr, err)
+			return processedCount, err
 		}
 
-		statusUint, staleBool := StatusToIntegrityStatus(resp.Status, resp.Stale)
-
-		// 5. Fulfill on-chain with retry
-		receipt, err := w.fulfillWithRetry(ctx, ev.RequestID, statusUint, staleBool)
-		if err != nil {
-			return processedCount, fmt.Errorf("fulfill verification request %s: %w", reqIDStr, err)
+		recipient := ""
+		if w.cfg.MintBadge != nil && result.Status == integrityValid {
+			recipient = ev.Requester
 		}
-
-		// 6. Record fulfillment in SQLite
-		txRef := ""
-		if receipt != nil {
-			txRef = receipt.TxRef
-		}
-		if err := w.cfg.Index.RecordFulfilledVerification(ctx, w.cfg.Network, reqIDStr, recordIDStr, statusUint, staleBool, txRef); err != nil {
+		if err := w.cfg.Index.RecordFulfilledVerification(ctx, w.cfg.Network, reqIDStr, recordIDStr, result.Status, result.Stale, txRef, recipient); err != nil {
 			return processedCount, fmt.Errorf("record fulfilled verification: %w", err)
 		}
 
@@ -153,6 +148,55 @@ func (w *Worker) PollOnce(ctx context.Context) (int, error) {
 	}
 
 	return processedCount, nil
+}
+
+func (w *Worker) fulfillEvent(ctx context.Context, requestID *big.Int, recordID string) (chain.VerificationResult, string, error) {
+	reader, recoverable := w.cfg.Adapter.(interface {
+		ReadVerificationResult(context.Context, *big.Int) (chain.VerificationResult, bool, error)
+	})
+	if recoverable {
+		result, fulfilled, err := reader.ReadVerificationResult(ctx, requestID)
+		if fulfilled || err != nil {
+			return result, "", err
+		}
+	}
+	response, err := w.cfg.Engine.Verify(ctx, w.cfg.Adapter, model.VerifyRequest{Network: w.cfg.Network, RecordID: recordID})
+	if err != nil {
+		return chain.VerificationResult{}, "", fmt.Errorf("verify record %s: %w", recordID, err)
+	}
+	status, stale := StatusToIntegrityStatus(response.Status, response.Stale)
+	receipt, err := w.fulfillWithRetry(ctx, requestID, status, stale)
+	if err != nil {
+		return chain.VerificationResult{}, "", fmt.Errorf("fulfill verification request %s: %w", requestID, err)
+	}
+	txRef := ""
+	if receipt != nil {
+		txRef = receipt.TxRef
+	}
+	return chain.VerificationResult{Status: status, Stale: stale}, txRef, nil
+}
+
+func (w *Worker) issueBadge(ctx context.Context) {
+	job, err := w.cfg.Index.NextBadge(ctx, w.cfg.Network)
+	if err != nil {
+		log.Printf("Read pending badge on %s: %v", w.cfg.Network, err)
+		return
+	}
+	if job == nil {
+		return
+	}
+	recordID, ok := new(big.Int).SetString(job.RecordID, 10)
+	if !ok {
+		log.Printf("Invalid record ID for pending badge on %s", w.cfg.Network)
+	} else {
+		err = w.cfg.MintBadge(ctx, job.Recipient, recordID)
+		if err != nil {
+			log.Printf("Mint badge on %s for record %s: %v", w.cfg.Network, job.RecordID, err)
+		}
+	}
+	if finishErr := w.cfg.Index.FinishBadge(ctx, w.cfg.Network, *job, ok && err == nil); finishErr != nil {
+		log.Printf("Update pending badge on %s: %v", w.cfg.Network, finishErr)
+	}
 }
 
 func (w *Worker) fulfillWithRetry(ctx context.Context, requestID *big.Int, status uint8, stale bool) (*chain.Receipt, error) {

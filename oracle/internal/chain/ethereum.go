@@ -374,6 +374,14 @@ func (a *EthereumAdapter) FilterVerificationRequests(ctx context.Context, startB
 	return events, nil
 }
 
+func (a *EthereumAdapter) ReadVerificationResult(ctx context.Context, requestID *big.Int) (VerificationResult, bool, error) {
+	verification, err := a.caller.GetVerification(&bind.CallOpts{Context: ctx}, requestID)
+	if err != nil {
+		return VerificationResult{}, false, err
+	}
+	return VerificationResult{Status: verification.Result.Status, Stale: verification.Result.Stale}, verification.Fulfilled, nil
+}
+
 // FulfillVerification submits a verification result for a request on-chain.
 func (a *EthereumAdapter) FulfillVerification(ctx context.Context, requestID *big.Int, status uint8, stale bool) (*Receipt, error) {
 	client := a.multiRPC.CurrentClient()
