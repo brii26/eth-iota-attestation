@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"slices"
 	"strconv"
@@ -21,6 +22,7 @@ import (
 // Config holds runtime dependencies and options for the API server.
 type Config struct {
 	S3Store           *store.S3Store
+	IPFSSBOM          *store.IPFSSBOMStore
 	BlobStore         verify.BlobStore
 	Index             *store.SQLiteIndex
 	ChainAdapter      chain.Adapter
@@ -46,6 +48,9 @@ func NewServer(cfg Config) *Server {
 	}
 
 	var blobStore verify.BlobStore = cfg.BlobStore
+	if blobStore == nil && cfg.IPFSSBOM != nil {
+		blobStore = cfg.IPFSSBOM
+	}
 	if blobStore == nil && cfg.S3Store != nil {
 		blobStore = cfg.S3Store
 	}
@@ -227,17 +232,23 @@ func (s *Server) handleCreateAttestation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	storageKey := fmt.Sprintf("%s/%s/%s/%s", req.Network, req.App, req.Version, req.ScanID)
+	storageKey := fmt.Sprintf("%s/%s/%s/%s.json", req.Network, req.App, req.Version, req.ScanID)
 	if s.cfg.S3Store != nil {
-		if err := s.cfg.S3Store.PutSBOM(ctx, storageKey+".json", req.SBOM); err != nil {
+		if err := s.cfg.S3Store.PutSBOM(ctx, storageKey, req.SBOM); err != nil {
 			_ = s.cfg.Index.UpdateStatus(ctx, req.Network, req.ScanID, "failed", "", "", nil)
 			writeJSONError(w, http.StatusBadGateway, model.ErrCodeDependencyUnavailable, fmt.Sprintf("failed to store SBOM: %v", err))
 			return
 		}
-		if err := s.cfg.S3Store.PutScan(ctx, storageKey+".json", req.Scan); err != nil {
+		if err := s.cfg.S3Store.PutScan(ctx, storageKey, req.Scan); err != nil {
 			_ = s.cfg.Index.UpdateStatus(ctx, req.Network, req.ScanID, "failed", "", "", nil)
 			writeJSONError(w, http.StatusBadGateway, model.ErrCodeDependencyUnavailable, fmt.Sprintf("failed to store scan: %v", err))
 			return
+		}
+	}
+
+	if s.cfg.IPFSSBOM != nil {
+		if err := s.cfg.IPFSSBOM.PinSBOM(ctx, req.App, storageKey, req.SBOM); err != nil {
+			log.Printf("IPFS SBOM pin failed for %s: %v", storageKey, err)
 		}
 	}
 

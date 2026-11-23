@@ -64,6 +64,19 @@ func main() {
 		log.Printf("warning: RustFS S3 store not available (%v)", err)
 	}
 
+	var blobStore verify.BlobStore
+	if s3Store != nil {
+		blobStore = s3Store
+	}
+	var ipfsSBOM *store.IPFSSBOMStore
+	if endpoint := os.Getenv("IPFS_KUBO_URL"); endpoint != "" {
+		ipfsSBOM, err = store.NewIPFSSBOMStore(s3Store, idx, endpoint, os.Getenv("IPFS_PUBLIC_SBOM_APPS"))
+		if err != nil {
+			log.Fatalf("invalid IPFS backup configuration: %v", err)
+		}
+		blobStore = ipfsSBOM
+	}
+
 	verdaccioClient := verify.NewVerdaccioClient(verdaccioURL)
 
 	// Build network adapter router
@@ -147,6 +160,7 @@ func main() {
 	server := api.NewServer(api.Config{
 		AuthorizePipeline: authorizePipeline,
 		S3Store:           s3Store,
+		IPFSSBOM:          ipfsSBOM,
 		Index:             idx,
 		Router:            router,
 		VerdaccioClient:   verdaccioClient,
@@ -161,7 +175,7 @@ func main() {
 	}
 
 	verifyEngine := verify.NewEngine(verify.EngineConfig{
-		BlobStore:       s3Store,
+		BlobStore:       blobStore,
 		ArtifactFetcher: verdaccioClient,
 		MaxGrypeDBAge:   maxAge,
 	})

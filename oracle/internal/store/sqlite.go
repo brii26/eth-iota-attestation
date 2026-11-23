@@ -102,6 +102,11 @@ func NewSQLiteIndex(dbPath string) (*SQLiteIndex, error) {
 		PRIMARY KEY(network, scan_id)
 	);
 
+	CREATE TABLE IF NOT EXISTS sbom_ipfs (
+		storage_key TEXT PRIMARY KEY,
+		cid TEXT NOT NULL
+	);
+
 	CREATE TABLE IF NOT EXISTS sync_state (
 		network TEXT PRIMARY KEY,
 		last_block INTEGER NOT NULL

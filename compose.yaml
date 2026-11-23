@@ -54,6 +54,12 @@ services:
       retries: 12
       start_period: 5s
 
+  kubo:
+    image: ipfs/kubo:v0.43.1@sha256:b293923d66e490e70ced64df42ea7a6cf7eac2740e3fb29101df18070fa7be48
+    profiles: [ipfs]
+    volumes:
+      - kubo-data:/data/ipfs
+
   deploy:
     image: eth-iota-attestation-oracle:development
     build: &oracle-build
@@ -88,6 +94,8 @@ services:
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsdevpassword123}
       VERDACCIO_URL: http://verdaccio:4873
       SQLITE_PATH: /data/attestations.sqlite
+      IPFS_KUBO_URL: ${IPFS_KUBO_URL:-}
+      IPFS_PUBLIC_SBOM_APPS: ${IPFS_PUBLIC_SBOM_APPS:-}
       OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
       OIDC_APP_ALLOWLIST: ${OIDC_APP_ALLOWLIST:-}
     ports:
@@ -122,3 +130,4 @@ volumes:
   geth-data:
   verdaccio-storage:
   rustfs-data:
+  kubo-data:

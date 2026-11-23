@@ -31,6 +31,26 @@ Pipeline submissions require the OIDC configuration in the [oracle
 guide](../oracle/README.md). Run the IOTA notarization service and Go oracle
 on the host using the [IOTA guide](spike-iota.md) when developing IOTA flows.
 
+## Optional IPFS backup for public demo SBOMs
+
+Enable the Kubo profile and list the public demo apps whose SBOMs may be
+published. Use exact app names separated by commas.
+
+```sh
+IPFS_KUBO_URL=http://kubo:5001 IPFS_PUBLIC_SBOM_APPS=@attestation/demo \
+  docker compose --profile ipfs up -d --build --wait
+```
+
+The oracle writes the SBOM and scan to RustFS, then tries to pin the SBOM
+for an allowlisted app. SQLite stores its CID. Verification tries RustFS
+first and uses the CID if the SBOM is unavailable, while still comparing
+the recovered bytes to the on-chain hash. Scan reports stay in RustFS.
+The Kubo administrative API is reachable only inside the Compose network.
+
+To exercise the fallback with the existing release smoke test, point
+`ATTESTATION_SMOKE_IPFS_KUBO_URL` at a disposable Kubo node and use a
+published demo package as the smoke fixture.
+
 ## Contract tooling
 
 Use Go 1.26 or newer for tests and commands:
