@@ -222,18 +222,24 @@ func TestRQ2TestnetComparison(t *testing.T) {
 					}
 					writes.Wait()
 					included := 0
+					lastInclusion := begin
 					for _, sample := range batch.Samples {
 						if sample.IncludedAt == nil {
 							continue
 						}
 						included++
+						if sample.IncludedAt.After(lastInclusion) {
+							lastInclusion = *sample.IncludedAt
+						}
 						finalized.Add(1)
 						go func() {
 							defer finalized.Done()
 							followFinality(ctx, ethRPC, iota, sample)
 						}()
 					}
-					batch.Throughput = float64(included) / time.Since(begin).Seconds()
+					if included > 0 {
+						batch.Throughput = float64(included) / lastInclusion.Sub(begin).Seconds()
+					}
 					results = append(results, batch)
 				}
 			}
@@ -309,7 +315,7 @@ func submitRQ2(parent context.Context, server http.Handler, network chain.Adapte
 	now := time.Now().UTC()
 	sample.IncludedAt = &now
 	query := chain.Query{App: fixture.App, Version: fixture.Version}
-	if sample.Network == "iota-testnet" {
+	if strings.HasPrefix(sample.Network, "iota-") {
 		query.ExternalRecordID = sample.RecordID
 	} else {
 		query.RecordID, _ = new(big.Int).SetString(sample.RecordID, 10)

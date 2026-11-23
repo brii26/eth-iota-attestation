@@ -21,8 +21,8 @@ func (a *IOTAAdapter) WriteBaseline(ctx context.Context, hashes BaselineHashes) 
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	var tx store.IOTATransaction
-	if err := a.call(ctx, http.MethodPost, "/baseline/prepare", hashes, &tx); err != nil {
+	tx, err := a.prepare(ctx, "/baseline/prepare", hashes)
+	if err != nil {
 		return nil, err
 	}
 	var receipt store.IOTAReceipt
