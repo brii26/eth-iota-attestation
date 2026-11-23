@@ -10,8 +10,11 @@ services:
       - --http.api=eth,net,web3
       - --http.vhosts=localhost,127.0.0.1,geth
       - --http.corsdomain=http://localhost:${FRONTEND_PORT:-5173},http://127.0.0.1:${FRONTEND_PORT:-5173}
+    environment:
+      - GETH_STATE_SCHEME
+      - GETH_GCMODE
     ports:
-      - "127.0.0.1:8545:8545"
+      - "127.0.0.1:${GETH_HOST_PORT:-8545}:8545"
     volumes:
       - geth-data:/data
     healthcheck:
@@ -20,7 +23,7 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
-    stop_grace_period: 30s
+    stop_grace_period: 5m
 
   verdaccio:
     image: verdaccio/verdaccio:6@sha256:8c9cd40d28ef134140f4f6c4cef2032ac58bd554cce56757048f81b72717c09c
@@ -117,6 +120,7 @@ services:
       dockerfile: docker/frontend/Dockerfile
       args:
         VITE_PRIVATE_BADGE_CONTRACT_ADDRESS: ${ETHEREUM_PRIVATE_BADGE_CONTRACT_ADDRESS:-}
+        VITE_PRIVATE_RPC_URL: http://127.0.0.1:${GETH_HOST_PORT:-8545}
     depends_on:
       oracle:
         condition: service_healthy

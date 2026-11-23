@@ -31,6 +31,32 @@ Pipeline submissions require the OIDC configuration in the [oracle
 guide](../oracle/README.md). Run the IOTA notarization service and Go oracle
 on the host using the [IOTA guide](spike-iota.md) when developing IOTA flows.
 
+### Geth shutdown and recovery
+
+Use `docker compose stop` to give Geth time to flush its state. On startup the
+deployment step checks the saved smoke record against the chain before the
+oracle or dashboard uses the registry. An unclean shutdown can rewind the
+head and make the saved deployment unavailable. Keep the old Geth volume
+and its deployment receipt together when investigating a rollback.
+
+For a new disposable devnet, the hash-based archive mode stores every state
+trie. Select it before creating the volume, and use a separate Compose project
+to keep the existing devnet intact. This command starts an isolated Geth and
+deploys a registry and smoke record on host port 18545.
+
+```sh
+GETH_STATE_SCHEME=hash GETH_GCMODE=archive GETH_HOST_PORT=18545 \
+  docker compose -p attestation-archive up -d --build --wait geth deploy
+```
+
+Keep the same settings when restarting the archive project. After a forced
+stop, Geth can replay its latest transaction in a different block. The
+deployment check compares the exact saved block hash and stops on a mismatch. To run
+its full stack alongside the default project, also choose free ports for Verdaccio,
+RustFS, the oracle, and the frontend. Hash archive mode increases disk use.
+See [Geth database shutdown](https://geth.ethereum.org/docs/fundamentals/databases)
+and [archive modes](https://geth.ethereum.org/docs/fundamentals/archive).
+
 ## Optional IPFS backup for public demo SBOMs
 
 Enable the Kubo profile and list the public demo apps whose SBOMs may be
