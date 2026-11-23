@@ -3,6 +3,8 @@ WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend ./
+ARG VITE_PRIVATE_BADGE_CONTRACT_ADDRESS
+ARG VITE_SEPOLIA_BADGE_CONTRACT_ADDRESS
 RUN npm run build
 
 FROM nginx:1.28.0-alpine

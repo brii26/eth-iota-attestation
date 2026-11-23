@@ -51,6 +51,29 @@ To exercise the fallback with the existing release smoke test, point
 `ATTESTATION_SMOKE_IPFS_KUBO_URL` at a disposable Kubo node and use a
 published demo package as the smoke fixture.
 
+## Optional Ethereum attestation badges
+
+After deploying the private registry, deploy the separate badge contract
+with the configured oracle address as its minter. Load the deployer key
+from `ETHEREUM_BADGE_DEPLOYER_PRIVATE_KEY` in your local environment.
+
+```sh
+ETHEREUM_BADGE_RPC_URL=http://127.0.0.1:8545 \
+  go run ./smart-contract/cmd/deploy-badge --minter "$ETHEREUM_ORACLE_ADDRESS"
+```
+
+Set `ETHEREUM_PRIVATE_BADGE_CONTRACT_ADDRESS` to the printed address and
+rebuild the Compose stack. For Vite, supply the same address in
+`VITE_PRIVATE_BADGE_CONTRACT_ADDRESS`. Sepolia uses `--chain-id 11155111` and
+the corresponding Sepolia badge variables from the oracle and frontend
+environment examples.
+
+An on-chain verification with result `Valid` queues one badge for the
+requester's wallet and record. Badge issuance uses a separate transaction.
+The verification result stays available if minting fails, and the oracle
+retries pending badge jobs. Connected wallets can view their badges in the
+dashboard.
+
 ## Contract tooling
 
 Use Go 1.26 or newer for tests and commands:
